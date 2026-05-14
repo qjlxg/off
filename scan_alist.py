@@ -12,7 +12,7 @@ import re
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # ======================== 核心参数配置 ========================
-INPUT_FILE = 'deduplicated.txt'     # 输入网址清单
+INPUT_FILE = 'duplicate.txt'     # 输入网址清单
 OUTPUT_DIR = 'scan_results'      # 结果输出目录
 STATUS_FILE = 'site_status.csv'   # 站点存活状态表
 MAX_THREADS = 60                 # 线程数
