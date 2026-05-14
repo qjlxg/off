@@ -1,130 +1,116 @@
 # -*- coding: utf-8 -*-
-import os
-import re
-import json
-import time
-import base64
-import urllib.request
-import urllib.parse
+import os, re, json, time, base64, urllib.request, urllib.parse
 from datetime import datetime
 
-# --- 核心配置 (参考 wzdnzd 逻辑) ---
-SEARCH_KEYWORD = '"/api/v1/client/subscribe?token="'
-# 增加一些变体关键词提高命中率
-SEARCH_VARIANTS = ['"/api/v1/client/subscribe?token="', 'sub?target=clash', 'vmess://', 'ssr://']
-TG_CHANNELS = ["v2rayfree", "clash_v2ray_free", "shareCentre", "v2ray_free_conf", "free520v2ray"]
+# --- 深度提取配置 ---
+# 搜索关键词列表：包含你上传脚本中的核心特征
+KEYWORDS = [
+    '"/api/v1/client/subscribe?token="',
+    'sub?target=clash&url=',
+    'data-link="https://'
+]
+TG_CHANNELS = ["v2rayfree", "clash_v2ray_free", "shareCentre", "v2ray_free_conf", "clash_subscription"]
 
 def http_get(url, headers=None):
-    # 模拟真实浏览器，防止被 Google/Yandex 直接拦截
     default_headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.5",
+        "Referer": "https://www.google.com/"
     }
     if headers: default_headers.update(headers)
     try:
         req = urllib.request.Request(url, headers=default_headers)
-        with urllib.request.urlopen(req, timeout=20) as response:
+        with urllib.request.urlopen(req, timeout=15) as response:
             return response.read().decode('utf-8', errors='ignore')
-    except Exception as e:
-        # print(f"Error fetching {url[:50]}: {e}") # 调试用
-        return ""
+    except: return ""
 
-def extract_content(content):
-    """参考 wzdnzd 的提取逻辑，同时支持订阅链接和节点协议"""
-    # 1. 提取订阅链接 (V2board / SSpanel 等)
-    sub_regex = r'https?://[^\s\"\'<>]+(?:/api/v1/client/subscribe\?token=[a-zA-Z0-9]{16,32}|/link/[a-zA-Z0-9?=&]+|/s/[a-zA-Z0-9]{15,})'
-    # 2. 提取单节点协议
-    proto_regex = r'(?:vmess|trojan|ss|ssr|vless|hysteria2|tuic)://[a-zA-Z0-9:.?+=@%&#_\-/]{10,}'
+def extract_all(text):
+    """
+    参考 wzdnzd 提取逻辑：
+    1. 提取订阅 URL
+    2. 提取单节点并尝试解码
+    """
+    subs, nodes = [], []
+    # 订阅链接正则 (通用 + 专用接口)
+    sub_pattern = r'https?://(?:[a-zA-Z0-9-]+\.)+[a-z]{2,}(?::\d+)?/(?:api/v1/client/subscribe\?token=[a-zA-Z0-9]{16,32}|link/[a-zA-Z0-9]+|s/[a-zA-Z0-9]{15,}|sub\?target=\w+&url=[^\s\'\"]+)'
+    # 协议正则
+    node_pattern = r'(?:vmess|trojan|ss|ssr|vless|hysteria2|tuic)://[a-zA-Z0-9:.?+=@%&#_\-/]{15,}'
     
-    subs = re.findall(sub_regex, content, re.I)
-    nodes = re.findall(proto_regex, content, re.I)
+    subs.extend(re.findall(sub_pattern, text, re.I))
+    nodes.extend(re.findall(node_pattern, text, re.I))
     
-    # 尝试 Base64 解码提取 (处理某些网页加密内容)
+    # Base64 深度探测 (很多订阅内容是整段 B64 编码的)
     try:
-        if len(content) > 100 and not content.startswith("http"):
-            decoded = base64.b64decode(content).decode('utf-8', errors='ignore')
-            s, n = extract_content(decoded)
-            subs.extend(s)
-            nodes.extend(n)
-    except:
-        pass
-        
+        # 匹配可能是 B64 的块
+        b64_blocks = re.findall(r'[a-zA-Z0-9+/=]{50,}', text)
+        for block in b64_blocks:
+            try:
+                decoded = base64.b64decode(block).decode('utf-8', errors='ignore')
+                if any(p in decoded for p in ['vmess://', 'http']):
+                    s, n = extract_all(decoded)
+                    subs.extend(s); nodes.extend(n)
+            except: pass
+    except: pass
     return list(set(subs)), list(set(nodes))
 
 def main():
-    print(f"[{datetime.now().strftime('%H:%M:%S')}] 开始执行全能抓取任务...")
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] 启动强化抓取任务...")
     gh_token = os.environ.get("GH_TOKEN")
-    stats = {"Google": 0, "Yandex": 0, "Telegram": 0, "GitHub": 0}
-    
-    all_subs, all_nodes = [], []
+    detail = {"Google": 0, "Yandex": 0, "Telegram": 0, "GitHub": 0}
+    all_s, all_n = [], []
 
-    # 1. Google (加入延时防止被封)
-    print("[+] 搜索 Google...", end=" ", flush=True)
-    for kw in SEARCH_VARIANTS[:1]: # 默认只用第一个核心词
-        for start in [0, 10]:
-            url = f"https://www.google.com/search?q={urllib.parse.quote(kw)}&start={start}"
-            content = http_get(url)
-            s, n = extract_content(content)
-            all_subs.extend(s); all_nodes.extend(n)
-            stats["Google"] += len(s)
-            time.sleep(3)
-    print(f"完成")
+    # 1. Google 深度搜索
+    print("[+] 正在执行 Google Dorking...", end=" ", flush=True)
+    for kw in KEYWORDS[:2]:
+        url = f"https://www.google.com/search?q={urllib.parse.quote(kw)}&tbs=qdr:d" # 只搜24小时内更新
+        s, n = extract_all(http_get(url))
+        all_s.extend(s); all_n.extend(n); detail["Google"] += len(s)
+        time.sleep(2)
+    print("完成")
 
     # 2. Yandex
-    print("[+] 搜索 Yandex...", end=" ", flush=True)
-    url = f"https://yandex.com/search/?text={urllib.parse.quote(SEARCH_KEYWORD)}"
-    content = http_get(url)
-    s, n = extract_content(content)
-    all_subs.extend(s); all_nodes.extend(n)
-    stats["Yandex"] = len(s)
-    print(f"完成")
+    print("[+] 正在请求 Yandex 接口...", end=" ", flush=True)
+    url = f"https://yandex.com/search/?text={urllib.parse.quote(KEYWORDS[0])}"
+    s, n = extract_all(http_get(url))
+    all_s.extend(s); all_n.extend(n); detail["Yandex"] = len(s)
+    print("完成")
 
-    # 3. Telegram (网页版解析)
-    print("[+] 抓取 Telegram...", end=" ", flush=True)
-    for channel in TG_CHANNELS:
-        content = http_get(f"https://t.me/s/{channel}")
-        s, n = extract_content(content)
-        all_subs.extend(s); all_nodes.extend(n)
-        stats["Telegram"] += len(s)
-    print(f"完成")
+    # 3. Telegram 频道扫描
+    print("[+] 正在解析 Telegram 消息...", end=" ", flush=True)
+    for c in TG_CHANNELS:
+        content = http_get(f"https://t.me/s/{c}")
+        s, n = extract_all(content)
+        all_s.extend(s); all_n.extend(n); detail["Telegram"] += len(s)
+    print("完成")
 
-    # 4. GitHub API
+    # 4. GitHub API (最稳定的来源)
     if gh_token:
-        print("[+] 搜索 GitHub...", end=" ", flush=True)
+        print("[+] 正在通过 GitHub API 检索...", end=" ", flush=True)
         headers = {"Authorization": f"token {gh_token}", "Accept": "application/vnd.github.v3+json"}
-        # 搜索最近更新的代码
-        api_url = f"https://api.github.com/search/code?q={urllib.parse.quote(SEARCH_KEYWORD)}&sort=indexed"
-        res = http_get(api_url, headers=headers)
+        # 尝试搜索代码片段
+        api_url = f"https://api.github.com/search/code?q={urllib.parse.quote(KEYWORDS[0])}&sort=indexed"
         try:
-            items = json.loads(res).get('items', [])[:15]
+            items = json.loads(http_get(api_url, headers=headers)).get('items', [])[:20]
             for item in items:
                 raw_url = item['html_url'].replace("github.com", "raw.githubusercontent.com").replace("/blob/", "/")
-                content = http_get(raw_url)
-                s, n = extract_content(content)
-                all_subs.extend(s); all_nodes.extend(n)
-                stats["GitHub"] += len(s)
+                s, n = extract_all(http_get(raw_url))
+                all_s.extend(s); all_n.extend(n); detail["GitHub"] += len(s)
         except: pass
-        print(f"完成")
+        print("完成")
 
-    # 数据去重过滤
-    unique_subs = sorted(list(set(all_subs)))
-    unique_nodes = sorted(list(set(all_nodes)))
+    # 数据去重与白名单过滤 (排除常见的垃圾干扰项)
+    final_subs = sorted(list(set([s for s in all_s if "127.0.0.1" not in s and "localhost" not in s])))
+    final_nodes = sorted(list(set(all_n)))
 
-    # 保存
     os.makedirs("results", exist_ok=True)
-    with open("results/subscribes.txt", "w", encoding="utf-8") as f:
-        f.write("\n".join(unique_subs))
-    with open("results/nodes.txt", "w", encoding="utf-8") as f:
-        f.write("\n".join(unique_nodes))
+    with open("results/subscribes.txt", "w", encoding="utf-8") as f: f.write("\n".join(final_subs))
+    with open("results/nodes.txt", "w", encoding="utf-8") as f: f.write("\n".join(final_nodes))
 
     print("\n" + "="*40)
-    print(f"{'来源':<15} | {'发现订阅数':<10}")
+    print(f"{'来源渠道':<15} | {'新增订阅链接':<10}")
     print("-" * 40)
-    for k, v in stats.items():
-        print(f"{k:<17} | {v:<10}")
+    for k, v in detail.items(): print(f"{k:<17} | {v:<10}")
     print("="*40)
-    print(f"总计去重: 订阅 {len(unique_subs)} / 节点 {len(unique_nodes)}")
+    print(f"最终结果: 订阅 {len(final_subs)} / 独立节点 {len(final_nodes)}")
 
 if __name__ == "__main__":
     main()
