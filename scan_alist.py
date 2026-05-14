@@ -6,6 +6,7 @@ from datetime import datetime
 import pytz
 import csv
 import urllib3
+import re
 
 # 禁用安全警告
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -18,20 +19,17 @@ MAX_THREADS = 60                 # 线程数
 TIMEOUT = 5                      # 超时设置
 MAX_DEPTH = 4                    # 扫描深度
 
-# 资源白名单 (涵盖影视、系统、配置等)
+# 资源白名单 (仅保留与订阅、节点、代理配置相关的后缀)
 INCLUDE_EXTS = {
-    # 影视类
-    'mp4', 'mkv', 'avi', 'mov', 'flv', 'rmvb', 'iso', 'ts', 'wmv', 'm3u8',
-    # App 与可执行类 (Windows 常用)
-    'apk', 'exe', 'msi', 'bat', 'cmd', 'reg', 'sh',
-    # 压缩包类
-   # 'zip', 'rar', '7z', 'gz', 'tar',
-    # 配置文件与代理
-    'yaml', 'yml', 'conf', 'config', 'clash', 'json', 'txt',
-    # 文档类 (办公常用)
-  #  'pdf', 'docx', 'xlsx', 'pptx', 'csv' 
+    'yaml', 'yml', 'conf', 'config', 'clash', 'json', 'txt'
 }
 IGNORE_PATTERNS = {'00', '01', '02', 'bak', 'log', 'temp', 'cache'}
+
+# 节点/订阅内容识别特征
+SUB_KEYWORDS = re.compile(
+    r'(proxies:|node:|proxy-groups:|vmess://|vless://|ssr://|ss://|trojan://|hysteria2://|tuic://|subscription)', 
+    re.IGNORECASE
+)
 
 # 完整的 AList 弱口令字典 (已去重)
 WEAK_PASSWORDS = [
@@ -210,22 +208,32 @@ def fetch_list(base_url, path, token, session):
     """底层 API 请求：处理目录列表获取"""
     api_url = f"{base_url.rstrip('/')}/api/fs/list"
     headers = {"Authorization": token} if token else {}
-    # per_page=0 在新版 AList 代表全量，旧版可能需设为 1000
     payload = {"path": path, "password": "", "page": 1, "per_page": 0}
     
     try:
         r = session.post(api_url, json=payload, headers=headers, timeout=TIMEOUT, verify=False)
         res = r.json()
-        # 情况1：成功获取
         if res.get("code") == 200:
             return res.get("data", {}).get("content", []), token
-        # 情况2：未授权(401)，触发登录尝试
         if res.get("code") == 401 and not token:
             new_token = attempt_login(base_url, session)
-            if new_token: # 登录成功，重试获取
+            if new_token:
                 return fetch_list(base_url, path, new_token, session)
     except: pass
     return None, token
+
+def inspect_content(d_url, session):
+    """打开文档并检测是否包含节点/订阅特征"""
+    try:
+        # 仅读取前 2048 字节进行判断，平衡效率与准确度
+        headers = {"Range": "bytes=0-2048"}
+        r = session.get(d_url, timeout=TIMEOUT, verify=False, headers=headers)
+        if r.status_code in [200, 206]:
+            content = r.text
+            if SUB_KEYWORDS.search(content):
+                return True
+    except: pass
+    return False
 
 def scan_site(url, session):
     """单站点递归扫描逻辑"""
@@ -241,9 +249,9 @@ def scan_site(url, session):
         if depth > MAX_DEPTH: continue
 
         items, token = fetch_list(url, path, token, session)
-        if items is None: continue # 无法解析该路径
+        if items is None: continue 
         
-        is_alive = True # 只要有一次成功请求即认为存活
+        is_alive = True 
         for item in items:
             name = item.get('name', '')
             if any(x in name for x in [".git", ".github"]): continue
@@ -254,69 +262,9 @@ def scan_site(url, session):
                     visited.add(full_path)
                     queue.append((full_path, depth + 1))
             else:
-                # 后缀识别与过滤
+                # 后缀识别与内容过滤
                 ext = name.split('.')[-1].lower() if '.' in name else ''
                 if ext in INCLUDE_EXTS:
                     if any(p in name.lower() for p in IGNORE_PATTERNS): continue
-                    d_url = f"{url.rstrip('/')}/d{full_path}"
-                    found_files.append((ext, name, d_url))
-    
-    status = "Success" if is_alive else "Failed/Timeout"
-    return url, found_files, status
-
-# ======================== 主程序 ========================
-
-def main():
-    # 环境初始化
-    cache = load_status_cache()
-    if not os.path.exists(OUTPUT_DIR): os.makedirs(OUTPUT_DIR)
-    
-    # 过滤待扫描 URL
-    with open(INPUT_FILE, 'r', encoding='utf-8') as f:
-        raw_urls = list(set(line.strip() for line in f if line.strip().startswith('http')))
-    urls = [u for u in raw_urls if cache.get(u) != "Failed/Timeout"]
-
-    print(f"📊 任务: 待扫描 {len(urls)} (已跳过死链 {len(raw_urls)-len(urls)})")
-
-    # 配置 Session
-    session = requests.Session()
-    adapter = requests.adapters.HTTPAdapter(pool_connections=MAX_THREADS, pool_maxsize=MAX_THREADS*2)
-    session.mount('http://', adapter)
-    session.mount('https://', adapter)
-
-    all_results = []
-    status_report = []
-
-    # 线程池执行
-    with concurrent.futures.ThreadPoolExecutor(MAX_THREADS) as executor:
-        future_to_url = {executor.submit(scan_site, u, session): u for u in urls}
-        for future in concurrent.futures.as_completed(future_to_url):
-            url, res, status = future.result()
-            status_report.append({'url': url, 'file_count': len(res), 'status': status})
-            all_results.extend(res)
-
-    # 写入状态统计 
-    scanned_urls = {d['url'] for d in status_report}
-    for u in raw_urls:
-        if u not in scanned_urls:
-            status_report.append({'url': u, 'file_count': 0, 'status': cache.get(u, 'Skipped')})
-    
-    with open(STATUS_FILE, 'w', encoding='utf-8', newline='') as f:
-        writer = csv.DictWriter(f, fieldnames=['url', 'file_count', 'status'])
-        writer.writeheader()
-        writer.writerows(status_report)
-
-    # 分类导出
-    ext_map = {}
-    for ext, name, d_url in set(all_results): # set 去重
-        ext_map.setdefault(ext, []).append(f"{name},{d_url}")
-
-    now = datetime.now(pytz.timezone('Asia/Shanghai')).strftime("%Y-%m-%d %H:%M")
-    for ext, lines in ext_map.items():
-        with open(os.path.join(OUTPUT_DIR, f"{ext}.txt"), 'w', encoding='utf-8') as f:
-            f.write(f"# 更新: {now}\n\n" + "\n".join(sorted(lines)))
-
-    print(f"✅ 完成！结果已分类存入 {OUTPUT_DIR}")
-
-if __name__ == "__main__":
-    main()
+                    
+                    d_url = f"{url.rstrip('/')
