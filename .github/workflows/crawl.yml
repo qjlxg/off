@@ -1,33 +1,41 @@
-name: crawl_all_in_one
+name: crawl
 
 on:
-  workflow_dispatch:
+  workflow_dispatch:      # 支持手动运行
   push:
     paths:
-      - 'crawl_all_in_one.py'
-      - '.github/workflows/crawl_all_in_one.yml'
+      - 'crawl.py'        # 脚本变动自动运行
+      - '.github/workflows/crawl.yml' # yml变动自动运行
   schedule:
-    - cron: '0 22 * * *' # 北京时间早上6点
+    - cron: '0 22 * * *'  # 每天北京时间早上6点运行 (UTC 22:00)
 
 jobs:
-  run-task:
+  build:
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: write     # 允许推送到仓库
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Run
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Run Crawler
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          # 设置时区为上海
           sudo timedatectl set-timezone Asia/Shanghai
-          python crawl_all_in_one.py
+          python crawl.py
 
-      - name: Push
+      - name: Commit Results
         run: |
-          git config --local user.email "action@github.com"
-          git config --local user.name "GitHub Action"
-          git add results/
-          git diff --quiet && git diff --staged --quiet || (git commit -m "auto update $(date)" && git push)
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          git add results/*.txt
+          # 只有在有变动时才提交，避免报错
+          git diff --quiet && git diff --staged --quiet || (git commit -m "Update subscribes $(date '+%Y-%m-%d %H:%M:%S')" && git push)
