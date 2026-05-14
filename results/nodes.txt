@@ -1,3 +1,7 @@
+hysteria2://__PWD1__@192.9.159.202:443/?insecure=1&sni=bing.com#Phoenix-1
+hysteria2://__PWD2__@155.248.215.125:443/?insecure=1&sni=bing.com#Phoenix-2
+hysteria2://__PWD3__@40.233.127.140:443/?insecure=1&sni=bing.com#Toronto-1
+hysteria2://__PWD4__@40.233.85.54:443/?insecure=1&sni=bing.com#Toronto-2
 trojan://2a599135-886f-4359-bf68-0993baa990f1@79.127.82.170:443?path=%2F1000%2F10%2Fb449693f-1869-4379-946d-279f2ad95021&amp
 vless://008a60b4-31e2-408a-baa7-b3aaf6c8fb9c@45.82.138.50:9021?security=none&amp
 vless://1893673b-0802-445a-9b0e-7de8d9991359@khaneh.berozsho.click:443?encryption=none&amp
