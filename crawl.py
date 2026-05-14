@@ -3,132 +3,122 @@ import os
 import re
 import json
 import time
-import base64
 import urllib.request
 import urllib.parse
-from datetime import datetime, timedelta
+from datetime import datetime
 
-# --- 配置区 (也可以通过环境变量传入) ---
+# --- 配置区 ---
 SEARCH_KEYWORD = '"/api/v1/client/subscribe?token="'
-TG_CHANNELS = ["v2rayfree", "clash_v2ray_free", "shareCentre"]  # 示例频道
-EXCLUDE_DOMAINS = "github.com|google.com|yandex.com|telegram.org"
+TG_CHANNELS = ["v2rayfree", "clash_v2ray_free", "shareCentre", "v2ray_free_conf"]
+EXCLUDE_DOMAINS = "github.com|google.com|yandex.com|telegram.org|twitter.com"
 
-def http_get(url, headers=None, params=None):
-    if params:
-        url = f"{url}?{urllib.parse.urlencode(params)}"
-    
+def http_get(url, headers=None):
     default_headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     }
-    if headers:
-        default_headers.update(headers)
-    
+    if headers: default_headers.update(headers)
     try:
         req = urllib.request.Request(url, headers=default_headers)
         with urllib.request.urlopen(req, timeout=15) as response:
             return response.read().decode('utf-8', errors='ignore')
-    except Exception as e:
-        print(f"[!] 请求失败 {url}: {e}")
+    except:
         return ""
 
 def extract_links(content):
-    """提取订阅链接和通用代理协议"""
-    # 匹配各类订阅格式
     sub_regex = r'https?://(?:[a-zA-Z0-9-]+\.)+[a-zA-Z0-9-]+(?::\d+)?/(?:api/v1/client/subscribe\?token=[a-zA-Z0-9]{16,32}|link/[a-zA-Z0-9]+\?(?:sub|clash)=\d|s/[a-zA-Z0-9]{32})'
-    # 匹配节点协议
     proto_regex = r'(?:vmess|trojan|ss|ssr|vless|hysteria2|tuic)://[a-zA-Z0-9:.?+=@%&#_\-/]{10,}'
-    
     links = re.findall(sub_regex, content, re.I)
     nodes = re.findall(proto_regex, content, re.I)
     return list(set(links)), list(set(nodes))
 
-def crawl_google(limit=50):
-    print("[+] 正在搜索 Google...")
-    results = []
-    query = urllib.parse.quote(SEARCH_KEYWORD)
-    for start in range(0, limit, 10):
-        url = f"https://www.google.com/search?q={query}&start={start}&tbs=qdr:d7"
-        content = http_get(url)
-        links, _ = extract_links(content)
-        results.extend(links)
-        time.sleep(2)
-    return results
-
-def crawl_yandex(pages=3):
-    print("[+] 正在搜索 Yandex...")
-    results = []
-    query = urllib.parse.quote(SEARCH_KEYWORD)
-    for p in range(pages):
-        url = f"https://yandex.com/search/?text={query}&p={p}"
-        content = http_get(url)
-        links, _ = extract_links(content)
-        results.extend(links)
-        time.sleep(2)
-    return results
-
-def crawl_telegram():
-    print("[+] 正在抓取 Telegram 频道...")
-    all_links, all_nodes = [], []
-    for channel in TG_CHANNELS:
-        url = f"https://t.me/s/{channel}"
-        content = http_get(url)
-        links, nodes = extract_links(content)
-        all_links.extend(links)
-        all_nodes.extend(nodes)
-    return all_links, all_nodes
-
-def crawl_github(token):
-    if not token:
-        print("[!] 跳过 GitHub: 无 GH_TOKEN")
-        return []
-    print("[+] 正在抓取 GitHub Code...")
-    results = []
-    query = urllib.parse.quote(SEARCH_KEYWORD)
-    url = f"https://api.github.com/search/code?q={query}&sort=indexed&order=desc"
-    headers = {"Authorization": f"token {token}", "Accept": "application/vnd.github.v3+json"}
-    
-    content = http_get(url, headers=headers)
-    try:
-        data = json.loads(content)
-        for item in data.get('items', []):
-            raw_url = item.get('html_url', '').replace("github.com", "raw.githubusercontent.com").replace("/blob/", "/")
-            file_content = http_get(raw_url)
-            links, _ = extract_links(file_content)
-            results.extend(links)
-    except:
-        pass
-    return results
-
 def main():
-    start_time = datetime.now()
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] 任务启动...")
     gh_token = os.environ.get("GH_TOKEN")
     
-    found_links = []
-    found_nodes = []
+    # 统计字典
+    stats = {
+        "Google": {"links": 0, "nodes": 0},
+        "Yandex": {"links": 0, "nodes": 0},
+        "Telegram": {"links": 0, "nodes": 0},
+        "GitHub": {"links": 0, "nodes": 0}
+    }
+    
+    all_links = []
+    all_nodes = []
 
-    # 运行各个爬虫
-    found_links.extend(crawl_google())
-    found_links.extend(crawl_yandex())
-    links, nodes = crawl_telegram()
-    found_links.extend(links)
-    found_nodes.extend(nodes)
-    found_links.extend(crawl_github(gh_token))
+    # 1. Google
+    print("[+] 搜索 Google...", end=" ", flush=True)
+    g_links = []
+    for start in range(0, 30, 10): # 抓取前3页
+        content = http_get(f"https://www.google.com/search?q={urllib.parse.quote(SEARCH_KEYWORD)}&start={start}&tbs=qdr:d7")
+        l, _ = extract_links(content)
+        g_links.extend(l)
+    stats["Google"]["links"] = len(set(g_links))
+    all_links.extend(g_links)
+    print(f"发现 {stats['Google']['links']} 条链接")
 
-    # 去重与过滤
-    unique_links = sorted(list(set([l for l in found_links if not re.search(EXCLUDE_DOMAINS, l)])))
-    unique_nodes = sorted(list(set(found_nodes)))
+    # 2. Yandex
+    print("[+] 搜索 Yandex...", end=" ", flush=True)
+    y_links = []
+    for p in range(2):
+        content = http_get(f"https://yandex.com/search/?text={urllib.parse.quote(SEARCH_KEYWORD)}&p={p}")
+        l, _ = extract_links(content)
+        y_links.extend(l)
+    stats["Yandex"]["links"] = len(set(y_links))
+    all_links.extend(y_links)
+    print(f"发现 {stats['Yandex']['links']} 条链接")
+
+    # 3. Telegram
+    print("[+] 抓取 Telegram...", end=" ", flush=True)
+    tg_links, tg_nodes = [], []
+    for channel in TG_CHANNELS:
+        content = http_get(f"https://t.me/s/{channel}")
+        l, n = extract_links(content)
+        tg_links.extend(l)
+        tg_nodes.extend(n)
+    stats["Telegram"]["links"] = len(set(tg_links))
+    stats["Telegram"]["nodes"] = len(set(tg_nodes))
+    all_links.extend(tg_links)
+    all_nodes.extend(tg_nodes)
+    print(f"发现 {stats['Telegram']['links']} 链接 / {stats['Telegram']['nodes']} 节点")
+
+    # 4. GitHub
+    if gh_token:
+        print("[+] 搜索 GitHub...", end=" ", flush=True)
+        git_links = []
+        headers = {"Authorization": f"token {gh_token}", "Accept": "application/vnd.github.v3+json"}
+        content = http_get(f"https://api.github.com/search/code?q={urllib.parse.quote(SEARCH_KEYWORD)}&sort=indexed", headers=headers)
+        try:
+            items = json.loads(content).get('items', [])[:10] # 取前10个结果
+            for item in items:
+                raw_url = item['html_url'].replace("github.com", "raw.githubusercontent.com").replace("/blob/", "/")
+                file_content = http_get(raw_url)
+                l, _ = extract_links(file_content)
+                git_links.extend(l)
+        except: pass
+        stats["GitHub"]["links"] = len(set(git_links))
+        all_links.extend(git_links)
+        print(f"发现 {stats['GitHub']['links']} 条链接")
+
+    # 数据汇总与去重
+    unique_links = sorted(list(set([l for l in all_links if not re.search(EXCLUDE_DOMAINS, l)])))
+    unique_nodes = sorted(list(set(all_nodes)))
 
     # 保存结果
     os.makedirs("results", exist_ok=True)
-    
     with open("results/subscribes.txt", "w", encoding="utf-8") as f:
         f.write("\n".join(unique_links))
-    
     with open("results/nodes.txt", "w", encoding="utf-8") as f:
         f.write("\n".join(unique_nodes))
 
-    print(f"\n[√] 抓取完成! 耗时: {datetime.now() - start_time}")
-    print(f"[i] 订阅链接: {len(unique_links)} | 独立节点: {len(unique_nodes)}")
+    # 打印最终明细表
+    print("\n" + "="*30)
+    print(f"{'来源渠道':<12} | {'链接数':<6} | {'节点数':<6}")
+    print("-" * 30)
+    for src, data in stats.items():
+        print(f"{src:<14} | {data['links']:<8} | {data['nodes']:<8}")
+    print("="*30)
+    print(f"总计去重后: 订阅 {len(unique_links)} / 节点 {len(unique_nodes)}")
 
 if __name__ == "__main__":
     main()
