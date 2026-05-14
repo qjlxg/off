@@ -25,13 +25,13 @@ INCLUDE_EXTS = {
 }
 IGNORE_PATTERNS = {'00', '01', '02', 'bak', 'log', 'temp', 'cache'}
 
-# 节点/订阅内容识别特征
+# 节点/订阅内容识别特征 (正则匹配)
 SUB_KEYWORDS = re.compile(
     r'(proxies:|node:|proxy-groups:|vmess://|vless://|ssr://|ss://|trojan://|hysteria2://|tuic://|subscription)', 
     re.IGNORECASE
 )
 
-# 完整的 AList 弱口令字典 (已去重)
+# ======================== AList 弱口令字典 ========================
 WEAK_PASSWORDS = [
     {"username": "admin", "password": "alist"},
     {"username": "admin", "password": "admin"},
@@ -223,14 +223,13 @@ def fetch_list(base_url, path, token, session):
     return None, token
 
 def inspect_content(d_url, session):
-    """打开文档并检测是否包含节点/订阅特征"""
+    """远程读取文档内容并检测节点特征"""
     try:
-        # 仅读取前 2048 字节进行判断，平衡效率与准确度
+        # 仅读取前 2KB 字节以节省带宽并判断
         headers = {"Range": "bytes=0-2048"}
         r = session.get(d_url, timeout=TIMEOUT, verify=False, headers=headers)
         if r.status_code in [200, 206]:
-            content = r.text
-            if SUB_KEYWORDS.search(content):
+            if SUB_KEYWORDS.search(r.text):
                 return True
     except: pass
     return False
@@ -262,9 +261,67 @@ def scan_site(url, session):
                     visited.add(full_path)
                     queue.append((full_path, depth + 1))
             else:
-                # 后缀识别与内容过滤
                 ext = name.split('.')[-1].lower() if '.' in name else ''
                 if ext in INCLUDE_EXTS:
                     if any(p in name.lower() for p in IGNORE_PATTERNS): continue
                     
-                    d_url = f"{url.rstrip('/')
+                    # 修正此处的字符串闭合语法错误
+                    d_url = f"{url.rstrip('/')}/d{full_path}"
+                    
+                    # 检查内容是否符合节点/订阅特征
+                    if inspect_content(d_url, session):
+                        found_files.append((ext, name, d_url))
+    
+    status = "Success" if is_alive else "Failed/Timeout"
+    return url, found_files, status
+
+# ======================== 主程序 ========================
+
+def main():
+    cache = load_status_cache()
+    if not os.path.exists(OUTPUT_DIR): os.makedirs(OUTPUT_DIR)
+    
+    with open(INPUT_FILE, 'r', encoding='utf-8') as f:
+        raw_urls = list(set(line.strip() for line in f if line.strip().startswith('http')))
+    urls = [u for u in raw_urls if cache.get(u) != "Failed/Timeout"]
+
+    print(f"📊 任务: 待扫描 {len(urls)} (已跳过死链 {len(raw_urls)-len(urls)})")
+
+    session = requests.Session()
+    adapter = requests.adapters.HTTPAdapter(pool_connections=MAX_THREADS, pool_maxsize=MAX_THREADS*2)
+    session.mount('http://', adapter)
+    session.mount('https://', adapter)
+
+    all_results = []
+    status_report = []
+
+    with concurrent.futures.ThreadPoolExecutor(MAX_THREADS) as executor:
+        future_to_url = {executor.submit(scan_site, u, session): u for u in urls}
+        for future in concurrent.futures.as_completed(future_to_url):
+            url, res, status = future.result()
+            status_report.append({'url': url, 'file_count': len(res), 'status': status})
+            all_results.extend(res)
+
+    scanned_urls = {d['url'] for d in status_report}
+    for u in raw_urls:
+        if u not in scanned_urls:
+            status_report.append({'url': u, 'file_count': 0, 'status': cache.get(u, 'Skipped')})
+    
+    with open(STATUS_FILE, 'w', encoding='utf-8', newline='') as f:
+        writer = csv.DictWriter(f, fieldnames=['url', 'file_count', 'status'])
+        writer.writeheader()
+        writer.writerows(status_report)
+
+    ext_map = {}
+    for ext, name, d_url in set(all_results): 
+        ext_map.setdefault(ext, []).append(f"{name},{d_url}")
+
+    now = datetime.now(pytz.timezone('Asia/Shanghai')).strftime("%Y-%m-%d %H:%M")
+    for ext, lines in ext_map.items():
+        with open(os.path.join(OUTPUT_DIR, f"{ext}.txt"), 'w', encoding='utf-8') as f:
+            f.write(f"# 节点资源发现: {now}\n\n" + "\n".join(sorted(lines)))
+
+    print(f"✅ 完成！结果已分类存入 {OUTPUT_DIR}")
+
+if __name__ == "__main__":
+    main()
