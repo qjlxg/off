@@ -47,7 +47,7 @@ jobs:
           git config --local user.name "github-actions[bot]"
           
           # 检查是否有文件更新
-          git add results/nodes.txt
+          git add results/nodes.txt  results/stats.csv
           if git diff --cached --quiet; then
             echo "没有发现新节点或数据变动，跳过提交。"
           else
