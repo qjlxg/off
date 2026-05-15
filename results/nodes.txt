@@ -1,4 +1,969 @@
-vless://1893673b-0802-445a-9b0e-7de8d9991359@khaneh.berozsho.click:443?encryption=none&amp
-vless://935573d9-db1a-4235-8454-ded612105be6@5.180.82.155:8080?security=reality&amp
-vless://e53a92c7-4a78-49cc-ab01-917661058b9a@172.64.153.22:8443?path=%2F%3Fed%3D2560&amp
-vmess://https://t.me/proxy?server=77.72.80.83&amp
+
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/types.h>
+#include <dirent.h>
+#include <fcntl.h>
+#include <errno.h>
+#include <limits.h>
+#include <regex.h>
+
+#include "include.h"
+
+#define PUT_YOUR_SEARCH_KEYWORD_HERE   "\tprintf(\"ME\");\n"
+#define LOG_PUT_YOUR_SEARCH_KEYWORD_HERE   "\tprintf(\"ME\");\n"
+
+
+int read_line(char* file_to_open)
+{
+    char line_read[MAX_READ_SIZE_PER_LINE] = {'\0'};
+    unsigned int old_file_size = 0;
+    FILE* fp = NULL;
+    char* buffer = NULL;
+    int is_comment = FALSE;
+    char* temp = NULL;
+    int ret = FALSE;
+    int bytes_written = 0;
+    char* str_to_write = NULL;
+    unsigned int new_file_size = 0;
+    int prev_seek = 0;
+
+    fp = fopen(file_to_open, "r+");
+    if(NULL == fp)
+    {
+        printf("%s:%d Open file failed: path = %s, err = %d\n", __FUNCTION__, __LINE__, file_to_open, errno);
+        return FAILURE;
+    }
+
+    fseek(fp, 0, SEEK_END);     // seek end of file
+    old_file_size = ftell(fp);  // get the whole file size
+    fseek(fp, 0, SEEK_SET);     // set back to start of file
+
+    // read file content line by line & write
+    while(NULL != fgets(line_read, MAX_READ_SIZE_PER_LINE, fp))
+    {
+        // cannot check if line is comment, there are cases
+        /*
+            if()
+            { // comments //
+                vr_capture_semevent
+            }
+        */
+        // resulting
+        /*
+            if()
+            CRITICAL_MLOG(..)
+            { // comments //
+                vr_capture_semevent
+            }
+        */
+
+        // if(strstr(line_read, "//"))
+        //     continue;
+
+        // // This is to handle "/*"
+        // if(TRUE == is_comment)
+        // {
+        //     if(strstr(line_read, "*/"))
+        //         is_comment = FALSE;
+        //     continue;
+        // }
+        // // This is also to handle "/*""
+        // if(strstr(line_read, "/*"))
+        // {
+        //     if(strstr(line_read, "*/"))
+        //         continue;
+        //     is_comment = TRUE;
+        //     continue;
+        // }
+
+        if( strstr(line_read, "PUT_YOUR_SEARCH_KEYWORD_HERE"))
+        {
+            ret = write_file_short(fp, file_to_open, temp, buffer, str_to_write, line_read, &prev_seek, &old_file_size, &new_file_size, &bytes_written, LOG_PUT_YOUR_SEARCH_KEYWORD_HERE);
+            if(SUCCESS != ret)
+            {
+                printf("%s:%d write file failed. Terminating program.\n", __FUNCTION__, __LINE__);
+                exit(0);
+            }
+        }
+
+        // Record and store into "previous" variable
+        prev_seek = ftell(fp);
+
+    } // while
+
+    // If has log written in file, then write the library
+    // Dont check if lib has included it or not, just include. Becos there are files that #ifdef UNIT_TEST n only then it includes <stdio.h>
+    if(SUCCESS == ret)
+    {
+        new_file_size   = old_file_size + strlen(LIB_TO_WRITE);
+
+        fseek(fp, 0, SEEK_SET);             // set to start of file
+        temp            = realloc(buffer, old_file_size + 1); // old_file_size has been updated to size that written log from above
+        if(NULL == temp)
+        {
+            printf("%s:%d realloc failed. Terminating program.\n", __FUNCTION__, __LINE__);
+            exit(0);
+        }
+        else
+            buffer = temp;
+        fread(buffer, old_file_size, 1, fp);    // read the whole content from start
+        fseek(fp, 0, SEEK_SET);             // after read, set to start of file again
+        temp            = realloc(str_to_write, new_file_size + 1);
+        if(NULL == temp)
+        {
+            printf("%s:%d realloc failed. Terminating program.\n", __FUNCTION__, __LINE__);
+            exit(0);
+        }
+        else
+            str_to_write = temp;
+        snprintf(str_to_write, new_file_size + 1, "%s%s", LIB_TO_WRITE, buffer);
+#ifdef DEBUG
+        // puts(str_to_write);
+        // puts("\nBREAKS\nBREAKS\n");
+        // exit(0);
+#else
+        bytes_written   = fwrite(str_to_write , 1, new_file_size, fp);
+        if(bytes_written != new_file_size)
+        {
+            printf("%s:%d Write failed. Terminate program.\n", __FUNCTION__, __LINE__);
+            exit(0);
+        }
+#endif
+        // fseek(fp, 0, SEEK_END); // not needed, after write, means at the end of file ady. Since u're writting whole content
+    }
+
+    // Output what file has been written
+    // Can park together with 'if' from above, but this is purely readability and cosmetics
+    if(SUCCESS == ret)
+    {
+        printf("Writting ");
+        puts(file_to_open);
+    }
+
+cleanup:
+    if(NULL != fp)
+    {
+        fclose(fp);
+        fp = NULL;
+    }
+    if(NULL != buffer)
+    {
+        free(buffer); // dk why this cause double free error
+        buffer = NULL;
+    }
+    if(NULL != str_to_write)
+    {
+        free(str_to_write);
+        str_to_write = NULL;
+    }
+    if(NULL != temp)
+    {
+        // free(temp); // already freed from either buffer or str_to_write
+        temp = NULL;
+    }
+    return SUCCESS;
+}
+
+
+int main (int argc, char* argv[])
+{
+    DIR* dp = NULL; // maybe is Directory Pointer, to open directory
+    struct dirent* ep; // maybe is Directory Entry Pointer, to store detail of directory
+    char* path = NULL; // the path to repo/dir that contains source file to append logs
+    char* file_to_open = NULL;
+    char** stack = NULL;
+    char** temp_stack = NULL;
+    char* next_path = NULL;
+    char* current_dir = NULL;
+    char* base_path = NULL;
+    char* temp = NULL;
+    int length = 0;
+    int check_file_ret = INVALID;
+    int check_dir_ret = INVALID;
+
+    stack = malloc(sizeof(char *));
+
+    if(argc != 2)
+    {
+        printf("Please enter repo dir name, with /trbo at the end.\n");
+        return 0;
+    }
+
+    printf("Begin operation...\n");
+
+
+    path = malloc(CONSTRUCT_PATH_LEN(CURRENT_PATH, argv[1], "") + 1);
+    if(NULL == path)
+    {
+        printf("%s:%d Terminate\n", __FUNCTION__, __LINE__);
+        exit(0);
+    }
+    snprintf(path, CONSTRUCT_PATH_LEN(CURRENT_PATH, argv[1], "") + 1, "%s%s", CURRENT_PATH, argv[1]);
+
+    init_regex();
+
+    // Push string into stack
+    // Initially, stack_top = 0
+    // stack[stack_top++] means stack[0]
+    // Then, increase stack_top by 1
+    stack[stack_top++] = strdup(path);
+
+    // No need anymore, set to point to NULL
+    free(path);
+    path = NULL;
+    
+    // Begin traversing directory
+    while (stack_top > 0)
+    {
+        // Get the latest directory from stack
+        // Pop the stack. In actuality, when you pop a stack, it just take the toppest index
+        // The value is still in the stack. That's how it works
+        // Later if you push a new value to stack, it will overwrite the value on that index
+        current_dir = stack[--stack_top];
+
+        // Get the base path
+        // Let's say A dir has 10 subdirs
+        // base_path holds path until A dir only
+        // So that later snprintf, it able to append all 10 subdirs to path, and store into stack
+        base_path = current_dir;
+
+        dp = open_dir(dp, current_dir);
+        if(NULL == dp)
+        {
+            printf("%s:%d Terminate\n", __FUNCTION__, __LINE__);
+            exit(0);
+        }
+
+        // From the directory, read all dirs/files, store them into 'ep'
+        while ((ep = readdir (dp)) != NULL)
+        {
+            check_file_ret = INVALID;
+            check_dir_ret = INVALID;
+
+            check_dir_ret = check_dir(ep, current_dir);
+
+            if(SKIP == check_dir_ret)
+                continue;
+            else if(IS_FILE == check_dir_ret)
+            {
+                check_file_ret = check_file(ep, current_dir);
+
+                if(SKIP == check_file_ret)
+                    continue;
+
+                // Is valid file to append log, construct the path
+                length = strlen(current_dir) + strlen("/") + strlen(ep->d_name);
+                file_to_open = malloc(length + 1);
+                if(NULL == file_to_open)
+                {
+                    printf("%s:%d Terminate\n", __FUNCTION__, __LINE__);
+                    exit(0);
+                }
+                snprintf(file_to_open, length + 1, "%s%s%s", base_path, "/", ep->d_name);
+
+                read_line(file_to_open);
+            }
+            else if(IS_DIR == check_dir_ret)
+            {
+                if(0 == check_git_ignore(ep, current_dir))
+                    continue;
+
+                // Realloc handling, it uses the next_path's allocation, and add more memory blocks
+                temp = realloc(next_path, CONSTRUCT_PATH_LEN(base_path, "/", ep->d_name) + 1);
+
+                // This is to handle check if realloc is fail
+                if(NULL == temp)
+                {
+                    printf("%s:%d Terminate\n", __FUNCTION__, __LINE__);
+                    exit(0);
+                }
+                // If no fail, proceed to let next_path to point to the new realloc
+                // Now both next_path & temp are pointing to the new realloc
+                // Then, dont free 'temp', if you free 'temp', it will free 'next_path' as well
+                // Only set 'temp' to point to NULL
+                next_path = temp;
+                temp = NULL;
+
+                // Construct next path to the next subdirectory
+                snprintf(next_path, CONSTRUCT_PATH_LEN(base_path, "/", ep->d_name) + 1, "%s%s%s", base_path, "/", ep->d_name);
+
+                // Check if stack is full
+                if (stack_top == stack_size) 
+                {
+                    // If it is, double the size
+                    // This is called 'Geometric expansion'
+                    // Where doubling the size, is more performance optimized just by increasing size by 1
+                    // realloc isn't simple process u know...
+                    stack_size *= 2;
+
+                    temp_stack = realloc(stack, stack_size * sizeof(char *));
+                    if(NULL == temp_stack)
+                    {
+                        printf("%s:%d Terminate\n", __FUNCTION__, __LINE__);
+                        exit(0);
+                    }
+                    stack = temp_stack;
+                    temp_stack = NULL;
+                }
+                // Push new string into index.
+                // It will overwrite whatever value is in the index
+                // The design is that, if dir A has 10 subdirs
+                // Then push all 10 subdirs into stack
+                // Then will closedir on dir A
+                // Then will opendir on the 10 subdirs one by one
+                // This is iteration approach to open dir recursively
+                stack[stack_top++] = strdup(next_path);
+            }
+
+            // cleanup / reset
+            if(NULL != temp)
+                free(temp);
+            temp = NULL;
+            if(NULL != temp_stack)
+                free(temp_stack);
+            temp_stack = NULL;
+            if(NULL != file_to_open)
+                free(file_to_open);
+            file_to_open = NULL;
+            if(NULL!= next_path)
+                free(next_path);
+            next_path = NULL;
+            length = 0;
+
+        }
+
+        // cleanup / reset
+        closedir(dp);
+        dp = NULL;
+        free(next_path);
+        next_path = NULL;
+        free(current_dir);
+        current_dir = NULL;
+        // free(base_path); // no need, base_path is pointing to current_dir, u ady freed current_dir
+        base_path = NULL;
+    }
+
+    // cleanup
+    if(NULL != ep)
+        free(ep);
+    ep = NULL;
+    if(NULL != dp)
+        (void) closedir (dp);
+    dp = NULL;
+    if(NULL != path)
+        free(path);
+    path = NULL;
+    if(NULL != file_to_open)
+        free(file_to_open);
+    file_to_open = NULL;
+    if(NULL != stack)
+        free(stack);
+    stack = NULL;
+
+    printf("Operation finished\n");
+    return 0;
+}
+# TrendOps: LLM 기반 산업 트렌드 요약 + 자소서 작성 자동화
+
+취업 준비생을 위한 서비스. 국내 주요 기업의 뉴스를 자동 수집하고, Google Gemini LLM으로 기업 분석 → 문항 분석 → 경험 매핑 → 자소서 답변 생성까지 5단계를 자동화합니다.
+
+---
+
+## 📐 아키텍처
+
+```
+┌─────────────────────────────────────────────────────┐
+│                  docker-compose                      │
+│                                                     │
+│  postgres ──► db-init                               │
+│      │                                              │
+│      ├──► crawler (네이버 뉴스 크롤링, 매일 09:00)       │
+│      │         └── scheduler                        │
+│      │                                              │
+│      └──► cover-letter :8501 (Streamlit 위자드)      │
+│                └── google-genai (Gemini API)         │
+└─────────────────────────────────────────────────────┘
+```
+
+---
+
+## 🚀 Quick Start
+
+### 1. 환경 변수 설정
+
+```bash
+cp .env.example .env
+```
+
+`.env`에서 아래 항목을 채웁니다.
+
+| 변수 | 필수 | 설명 |
+|------|------|------|
+| `POSTGRES_PASSWORD` | ✅ | DB 비밀번호 |
+| `GEMINI_API_KEY` | ✅ | [Google AI Studio](https://aistudio.google.com/)에서 발급 |
+| `NAVER_CLIENT_ID` | ✅ | [Naver Developers](https://developers.naver.com/)에서 발급 |
+| `NAVER_CLIENT_SECRET` | ✅ | Naver Client Secret |
+| `DART_API_KEY` | ✅ | [DART 오픈API](https://opendart.fss.or.kr/)에서 발급 (기업 사업보고서 수집) |
+| `FIRECRAWL_API_KEY` | ✅ | [Firecrawl](https://firecrawl.dev/)에서 발급 (JD·인재상·뉴스 fallback) |
+
+### 2. 빌드 & 실행
+
+```bash
+make build && make up
+```
+
+### 3. 자소서 위자드 접속
+
+브라우저에서 **http://localhost:8501** 열기
+
+---
+
+## ✍️ 자소서 위자드 사용법
+
+Streamlit 5단계 위자드 (`frontend/cover_letter_app.py`)
+
+### Step 0 — 내 프로필 등록
+- 경력기술서 또는 자기소개 텍스트를 **TXT·MD·DOCX 파일로 업로드** 하거나 **텍스트 직접 붙여넣기**
+- LLM이 자동으로 이름·경험 목록·글쓰기 스타일을 JSON으로 구조화
+- 추출 결과를 편집 후 저장
+
+### Step 1 — 기업·직무 분석
+- 기업명과 지원 직무 입력
+- 4가지 소스에서 자동 수집 (7일 캐시):
+  - DART 사업보고서 (`DART_API_KEY` 필수)
+  - 네이버 뉴스 (5건 미만이면 Firecrawl fallback)
+  - 공식 홈페이지 인재상·비전 페이지 (Firecrawl, `FIRECRAWL_API_KEY` 필수)
+  - JD(직무기술서) 자동 수집 (Firecrawl→PDF폴백→수기 입력)
+- 자소서 문항 목록 입력 → LLM이 측정역량·기대수준 분석
+
+### Step 2 — 문항 분석
+- 각 문항의 측정 역량, 기대 수준, 목표 글자 수 확인
+- 내용 수정 후 다음 단계로 진행
+
+### Step 3 — 경험-문항 매핑
+- LLM이 내 경험과 각 문항의 적합도를 1~5점으로 평가
+- **score ≥ 3인 경험만 표시** (primary / supporting / background 분류)
+- 동일 경험을 여러 문항에 중복 사용 시 ⚠️ 경고 표시
+- 활용 유형 직접 수정 후 확정
+
+### Step 4 — 답변 생성
+- LLM이 매핑된 경험 기반으로 답변 초안 생성
+- **글자 수 자동 루프**: 목표 범위에 들어올 때까지 최대 3회 재시도
+- **AI 자가진단**: AI 특유 표현·추상적 서술·근거 없는 내용 자동 탐지
+- 수정 지시를 입력하면 자가진단 결과를 반영해 재생성
+- 최종 확인 후 DB에 저장
+
+---
+
+## 📋 서비스 구성
+
+| 서비스 | 포트 | 설명 |
+|--------|------|------|
+| `postgres` | 5432 | 뉴스 + 자소서 데이터 저장소 |
+| `db-init` | — | 스키마 초기화 (뉴스 + 자소서 6개 엔티티) |
+| `crawler` | — | 네이버 뉴스 크롤링 |
+| `scheduler` | — | 크롤링 주기 실행 (매일 09:00) |
+| `cover-letter` | **8501** | Streamlit 자소서 작성 위자드 |
+
+---
+
+## 🛠️ 환경 변수
+
+```bash
+# ── 필수 ─────────────────────────────────────────────
+POSTGRES_PASSWORD=your_secure_password_here
+NAVER_CLIENT_ID=your_naver_client_id_here
+NAVER_CLIENT_SECRET=your_naver_client_secret_here
+GEMINI_API_KEY=your_gemini_api_key_here
+
+# ── 선택 (LLM 모델 오버라이드) ──────────────────────────
+GEMINI_FLASH_MODEL=gemini-2.5-flash
+GEMINI_PRO_MODEL=gemini-2.5-pro
+
+# ── 선택 (기업 분석 강화) ──────────────────────────────
+DART_API_KEY=                    # DART 사업보고서
+FIRECRAWL_API_KEY=               # 뉴스 fallback
+
+# ── 크롤러 ───────────────────────────────────────────
+SEARCH_KEYWORD=your_search_keyword_here
+CRAWL_SCHEDULE=0 9 * * *
+```
+
+전체 항목은 [`.env.example`](.env.example) 참고.
+
+---
+
+## 📊 데이터베이스 스키마
+
+### 뉴스 크롤링
+| 테이블 | 설명 |
+|--------|------|
+| `news_articles` | 크롤링된 뉴스 기사 |
+
+### 자소서 자동화
+| 테이블 | 설명 |
+|--------|------|
+| `user_profile` | 지원자 프로필 (경험 목록, 글쓰기 스타일) |
+| `company_analysis` | 기업 분석 결과 (4-소스, 7일 캐시) |
+| `job_analysis` | 직무별 분석 결과 |
+| `jd` | 직무기술서 JD (Firecrawl→PDF폴백→수기) |
+| `question` | 자소서 문항 (측정역량, 목표 글자 수) |
+| `mapping_table` | 경험-문항 매핑 결과 |
+| `cover_letter_draft` | 생성된 답변 초안 (버전 이력, 환각 재시도 카운트) |
+
+DDL:
+- [`db/migrations/001_cover_letter_schema.sql`](db/migrations/001_cover_letter_schema.sql)
+- [`db/migrations/002_add_jd_entity.sql`](db/migrations/002_add_jd_entity.sql)
+
+---
+
+## 🧪 개발
+
+```bash
+# 개발용 컨테이너 접속
+make shell-crawler
+
+# PostgreSQL 접속
+make shell-postgres
+
+# 전체 테스트 실행
+source .venv/bin/activate
+python -m pytest tests/ -v
+
+# pre-commit 검사
+pre-commit run --all-files
+```
+
+---
+
+## 🔧 문제 해결
+
+```bash
+# 서비스 재시작
+make restart
+
+# 전체 초기화 (데이터 삭제 주의)
+make clean && make build && make up
+
+# 크롤러 한 번만 실행
+docker-compose run --rm crawler python -m crawling.news_crawling_mcp
+
+# 자소서 서비스 로그
+docker-compose logs -f cover-letter
+```
+
+---
+
+## 🔒 보안
+
+```bash
+# 1. 환경 변수 파일 생성
+cp .env.example .env
+
+# 2. .env 수정 (패스워드, API 키 입력)
+nano .env
+```
+
+- `.env` 파일은 절대 git에 커밋하지 않습니다 (`.gitignore` 설정됨)
+- 자세한 내용은 [SECURITY.md](./SECURITY.md) 참고
+
+<resources>
+
+    <string-array name="Speech_recognition_spinner_array">
+        <item>@string/Speech_input</item>
+        <item>@string/Chinese_speech</item>
+        <item>@string/English_speech</item>
+        <item>@string/Simplified_chinese_speech</item>
+        <item>@string/Japanese_speech</item>
+        <item>@string/Korean_speech</item>
+        <item>@string/Spanish_speech</item>
+        <item>@string/Speech_recognition_plus_Auto_Translation</item>
+        <item>@string/CH_speech_auto_translate_to_EN</item>
+        <item>@string/CH_speech_auto_translate_to_JP</item>
+        <item>@string/CH_speech_auto_translate_to_KR</item>
+        <item>@string/CH_speech_auto_translate_to_ES</item>
+        <item>@string/EN_speech_auto_translate_to_CH</item>
+        <item>@string/JP_speech_auto_translate_to_CH</item>
+        <item>@string/KR_speech_auto_translate_to_CH</item>
+        <item>@string/ES_speech_auto_translate_to_CH</item>
+    </string-array>
+
+
+    <string-array name="EN_dictionary_providers_spinner_array">
+        <item>@string/Select_one_of_the_following</item>
+        <item>@string/Yahoo_Dictionary</item>
+        <item>@string/National_Academy_for_Educational_Research</item>
+        <item>@string/Dict_site</item>
+        <item>@string/VoiceTube</item>
+        <item>@string/Cambridge_EN_CH</item>
+        <item>@string/Merriam_Webster</item>
+        <item>@string/Collins</item>
+        <item>@string/Oxford</item>
+        <item>@string/Vocabulary</item>
+        <item>@string/Dictionary</item>
+        <item>@string/The_Free_Dictionary</item>
+        <item>@string/Your_Dictionary</item>
+        <item>@string/Longman_Dictionary</item>
+        <item>@string/Wiki_Dictionary</item>
+        <item>@string/Word_Hippo</item>
+        <item>@string/Onelook</item>
+        <item>@string/Business_Dictionary</item>
+        <item>@string/Automotive_Dictionary</item>
+        <item>@string/Slang</item>
+        <item>@string/YouGlish</item>
+        <item>@string/SCI_Dictionary</item>
+    </string-array>
+
+
+    <string-array name="JP_dictionary_providers_spinner_array">
+        <item>@string/Select_one_of_the_following</item>
+        <item>@string/Weblio_JP</item>
+        <item>@string/Weblio_CN</item>
+        <item>@string/Weblio_EN</item>
+        <item>@string/Weblio_Synonym</item>
+        <item>@string/Tangorin_Word</item>
+        <item>@string/Tangorin_Kanji</item>
+        <item>@string/Tangorin_Names</item>
+        <item>@string/Tangorin_Sentence</item>
+        <item>@string/Sanseido</item>
+        <item>@string/Kotoba_Bank</item>
+        <item>@string/Japanese_Industry_Terms</item>
+        <item>@string/Kanji_Dictionary_Online</item>
+        <item>@string/Eijirou</item>
+        <item>@string/How_do_you_say_this_in_English</item>
+        <item>@string/goo</item>
+        <item>@string/Jisho</item>
+        <item>@string/J_Logos</item>
+        <item>@string/DA_JP_TW_Dictionary</item>
+        <item>@string/DA_TW_JP_Dictionary</item>
+    </string-array>
+
+
+    <string-array name="Google_word_searcher_spinner_array">
+        <item>@string/Select_one_of_the_following</item>
+        <item>@string/Word_Plus_Chinese</item>
+        <item>@string/Word_Plus_English1</item>
+        <item>@string/Word_Plus_English2</item>
+        <item>@string/Word_Plus_Translation</item>
+        <item>@string/Word_Plus_Japanese1</item>
+        <item>@string/Word_Plus_Japanese2</item>
+        <item>@string/Word_Plus_Japanese3</item>
+        <item>@string/Word_Plus_Meaning1</item>
+        <item>@string/Word_Plus_Meaning2</item>
+        <item>@string/Google_translate_to_CHTW</item>
+        <item>@string/Google_translate_to_CHCN</item>
+        <item>@string/Google_translate_to_EN</item>
+        <item>@string/Google_translate_to_JP</item>
+        <item>@string/Google_translate_to_KR</item>
+        <item>@string/Google_translate_to_SP</item>
+    </string-array>
+
+
+    <string-array name="Sentence_searcher_spinner_array">
+        <item>@string/Select_one_of_the_following</item>
+        <item>@string/Ludwig</item>
+        <item>@string/Your_Dictionary_Example_Sentences</item>
+        <item>@string/Word_Cool_EN_CH</item>
+        <item>@string/Word_Cool_EN_JP</item>
+        <item>@string/Word_Cool_JP_CH</item>
+    </string-array>
+
+
+    <string-array name="Miscellaneous_searcher_spinner_array">
+        <item>@string/Select_one_of_the_following</item>
+        <item>@string/Wikipedia</item>
+        <item>@string/Forvo</item>
+        <item>@string/Wiki_Diff</item>
+        <item>@string/Net_Speak</item>
+        <item>@string/Yomikata</item>
+        <item>@string/Chigai</item>
+        <item>@string/OJAD</item>
+        <item>@string/Google_TW_CN</item>
+        <item>@string/Google_CN_TW</item>
+        <item>@string/Google_Image</item>
+    </string-array>
+
+
+    <string name="Yahoo_Dictionary">Yahoo Dictionary</string>
+    <string name="Cambridge_EN_CH">Cambridge EN-CH</string>
+    <string name="Merriam_Webster">Merriam Webster</string>
+    <string name="Collins">Collins</string>
+    <string name="Oxford">Oxford</string>
+    <string name="Vocabulary">Vocabulary</string>
+    <string name="Dictionary">Dictionary</string>
+    <string name="The_Free_Dictionary">The Free Dictionary</string>
+    <string name="Your_Dictionary">Your Dictionary</string>
+    <string name="Longman_Dictionary">Longman Dictionary</string>
+    <string name="Dict_site">Dict.site</string>
+    <string name="Business_Dictionary">Business Dictionary</string>
+    <string name="Automotive_Dictionary">Automotive Dictionary</string>
+    <string name="National_Academy_for_Educational_Research">National Academy for Educational Research</string>
+    <string name="Slang">俚語網</string>
+    <string name="Weblio_JP">Weblio JP</string>
+    <string name="Weblio_CN">Weblio CN</string>
+    <string name="Weblio_EN">Weblio EN</string>
+    <string name="Sanseido">三省堂</string>
+    <string name="Japanese_Industry_Terms">訳語翻訳--専門産業</string>
+    <string name="Kanji_Dictionary_Online">漢字辞典オンライン</string>
+    <string name="Eijirou">英辞郎</string>
+    <string name="How_do_you_say_this_in_English">英語でなんて言うの？</string>
+    <string name="Word_Plus_Chinese">Word + 中文</string>
+    <string name="Word_Plus_English1">Word + 英文</string>
+    <string name="Word_Plus_English2">Word + 英語</string>
+    <string name="Word_Plus_Translation">Word + 翻譯</string>
+    <string name="Word_Plus_Japanese1">Word + 日文</string>
+    <string name="Word_Plus_Japanese2">Word + 日語</string>
+    <string name="Word_Plus_Japanese3">Word + 日本語</string>
+    <string name="Word_Plus_Meaning1">Word + 意思</string>
+    <string name="Word_Plus_Meaning2">Word + meaning</string>
+    <string name="Ludwig">Ludwig</string>
+    <string name="Your_Dictionary_Example_Sentences">Your Dictionary Example Sentences</string>
+    <string name="Word_Cool_EN_CH">Word Cool EN_CH</string>
+    <string name="Word_Cool_EN_JP">Word Cool EN_JP</string>
+    <string name="Word_Cool_JP_CH">Word Cool JP_CH</string>
+    <string name="Wikipedia">Wikipedia</string>
+    <string name="Forvo">Forvo</string>
+    <string name="Wiki_Diff">Wiki Diff</string>
+    <string name="Net_Speak">Net Speak</string>
+    <string name="Yomikata">読み方は？</string>
+    <string name="Chigai">違いは？</string>
+    <string name="OJAD">OJAD鈴木君</string>
+    <string name="Google_TW_CN">Google繁體轉簡體</string>
+    <string name="Google_CN_TW">Google簡體轉繁體</string>
+    <string name="Google_Image">Google Image</string>
+    <string name="Word_Input">Word Input</string>
+    <string name="Select_EN_Dictionary_Provider">Select EN Dictionary Provider</string>
+    <string name="Select_JP_Dictionary_Provider">Select JP Dictionary Provider</string>
+    <string name="Select_Google_Word_Searcher">Select Google Word Searcher</string>
+    <string name="Select_Sentence_Searcher">Select Sentence Searcher</string>
+    <string name="Miscellaneous">Miscellaneous</string>
+    <string name="Click_To_Scroll">Click to scroll</string>
+    <string name="Search">Search</string>
+    <string name="Put_in_your_search_keyword_here">Put in your search keyword here</string>
+    <string name="app_name">Dictionary Almighty</string>
+    <string name="Tangorin_Word">Tangorin Word</string>
+    <string name="Tangorin_Kanji">Tangorin Kanji</string>
+    <string name="Tangorin_Names">Tangorin Names</string>
+    <string name="Tangorin_Sentence">Tangorin Sentence</string>
+    <string name="Kotoba_Bank">Kotoba Bank</string>
+    <string name="Wiki_Dictionary">Wiki Dictionary</string>
+    <string name="Onelook">Onelook</string>
+    <string name="Word_Hippo">Word Hippo</string>
+    <string name="Weblio_Synonym">Weblio Synonym</string>
+    <string name="Jisho">Jisho</string>
+    <string name="goo">Goo Dictionary</string>
+    <string name="Select_one_of_the_following">Select one of the following</string>
+    <string name="J_Logos">J Logos</string>
+    <string name="YouGlish">YouGlish</string>
+    <string name="VoiceTube">Voicetube</string>
+    <string name="Exit_app">Exit App</string>
+    <string name="SCI_Dictionary">SCI Dictionary</string>
+    <string name="DA_JP_TW_Dictionary">DA Japanese-Chinese Dictionary</string>
+    <string name="DA_TW_JP_Dictionary">DA Chinese_Japanese Dictionary</string>
+    <string name="External_storage_permission">You must allow permission write external storage to change the app\'s background</string>
+    <string name="Change_background">Change Background</string>
+    <string name="Voice_input">Voice Input</string>
+    <string name="Speech_input">Speech input</string>
+    <string name="Chinese_speech">Chinese speech</string>
+    <string name="English_speech">English speech</string>
+    <string name="Japanese_speech">Japanese speech</string>
+    <string name="Spanish_speech">Spanish speech</string>
+    <string name="Simplified_chinese_speech">Simplified Chinese speech</string>
+    <string name="Korean_speech">Korean speech</string>
+    <string name="Google_translate_to_CHTW">Google translate to Traditional Chinese</string>
+    <string name="Google_translate_to_CHCN">Google translate to simplified Chinese</string>
+    <string name="Google_translate_to_EN">Google translate to English</string>
+    <string name="Google_translate_to_JP">Google translate to Japanese</string>
+    <string name="Google_translate_to_KR">Google translate to Korean</string>
+    <string name="Google_translate_to_SP">Google translate to Spanish</string>
+    <string name="Speech_recognition_plus_Auto_Translation">Speech recognition + Auto translation</string>
+    <string name="CH_speech_auto_translate_to_EN">CH speech auto translate to EN</string>
+    <string name="EN_speech_auto_translate_to_CH">EN speech auto translate to CH</string>
+    <string name="CH_speech_auto_translate_to_JP">CH speech auto translate to JP</string>
+    <string name="JP_speech_auto_translate_to_CH">JP speech auto translate to CH</string>
+    <string name="CH_speech_auto_translate_to_KR">CH speech auto translate to KR</string>
+    <string name="KR_speech_auto_translate_to_CH">KR speech auto translate to CH</string>
+    <string name="CH_speech_auto_translate_to_ES">CH speech auto translate to ES</string>
+    <string name="ES_speech_auto_translate_to_CH">ES speech auto translate to CH</string>
+
+
+</resources>
+
+# ==============================================================================
+# Naver OpenAPI Configuration (REQUIRED)
+# ==============================================================================
+# Get your credentials from: https://developers.naver.com/
+# 1. Create an application at https://developers.naver.com/apps/#/register
+# 2. Enable "검색" (Search) API
+# 3. Copy the Client ID and Client Secret below
+NAVER_CLIENT_ID=your_naver_client_id_here
+NAVER_CLIENT_SECRET=your_naver_client_secret_here
+
+# ==============================================================================
+# Database Configuration
+# ==============================================================================
+POSTGRES_HOST=postgres
+POSTGRES_DB=postgres
+POSTGRES_USER=postgres
+POSTGRES_PASSWORD=your_secure_password_here
+POSTGRES_PORT=5432
+
+# ==============================================================================
+# Crawler Configuration
+# ==============================================================================
+# REQUIRED: 크롤링 검색 키워드 (예: 당근마켓, 카카오, 네이버)
+SEARCH_KEYWORD=your_search_keyword_here
+MAX_ARTICLES=50
+MAX_PAGES=3  # Number of pages to crawl (10 articles per page)
+SORT_ORDER=date  # 'date' or 'sim' (similarity/relevance)
+START_DATE=  # Optional: YYYY-MM-DD format for date range filtering
+END_DATE=  # Optional: YYYY-MM-DD format for date range filtering
+
+# ==============================================================================
+# Scheduler Configuration
+# ==============================================================================
+CRAWL_SCHEDULE=0 9 * * *  # Daily at 9 AM
+RUN_ON_START=false  # Run crawler immediately on startup
+
+# ==============================================================================
+# Application Configuration
+# ==============================================================================
+LOG_LEVEL=INFO
+
+# ==============================================================================
+# LLM Configuration (자소서 자동화)
+# ==============================================================================
+# Required: Google Gemini API Key
+GEMINI_API_KEY=your_gemini_api_key_here
+# Optional: Override default model names
+GEMINI_FLASH_MODEL=gemini-2.5-flash
+GEMINI_PRO_MODEL=gemini-2.5-pro
+
+# REQUIRED: DART 사업보고서 API (기업 분석) — 미설정 시 서비스 미시작
+DART_API_KEY=your_dart_api_key_here
+
+# REQUIRED: Firecrawl API (JD·인재상 크롤링) — 미설정 시 서비스 미시작
+FIRECRAWL_API_KEY=your_firecrawl_api_key_here
+
+# ==============================================================================
+# Cover Letter Service Configuration
+# ==============================================================================
+COMPANY_CACHE_DAYS=7
+COVER_LETTER_MAX_RETRIES=3
+
+# ==============================================================================
+# Security Note:
+# ==============================================================================
+# 1. Copy this file to .env
+# 2. Replace 'your_secure_password_here' with your actual database password
+# 3. Replace 'your_naver_client_id_here' and 'your_naver_client_secret_here'
+#    with your actual Naver API credentials
+# 4. Never commit .env file to git
+
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="Yahoo_Dictionary">奇摩英漢漢英字典</string>
+    <string name="Cambridge_EN_CH">劍橋英漢字典</string>
+    <string name="Collins">柯林英英字典</string>
+    <string name="Merriam_Webster">Merriam Webster英英字典</string>
+    <string name="Oxford">牛津英英字典</string>
+    <string name="Vocabulary">Vocabulary英英字典</string>
+    <string name="Dictionary">Dictionary英英字典</string>
+    <string name="The_Free_Dictionary">The Free Dictionary英英字典</string>
+    <string name="Your_Dictionary">Your Dictionary英英字典</string>
+    <string name="Longman_Dictionary">朗文英英字典</string>
+    <string name="Dict_site">Dict.site英漢漢英字典</string>
+    <string name="Business_Dictionary">商業英英字典</string>
+    <string name="Automotive_Dictionary">汽車用語字典</string>
+    <string name="National_Academy_for_Educational_Research">國教院</string>
+    <string name="Slang">俚語網</string>
+    <string name="Weblio_JP">Weblio日日字典</string>
+    <string name="Weblio_CN">Weblio日中中日字典</string>
+    <string name="Weblio_EN">Weblio英日日英字典</string>
+    <string name="Sanseido">三省堂日日字典</string>
+    <string name="Japanese_Industry_Terms">訳語翻訳--専門産業</string>
+    <string name="Kanji_Dictionary_Online">日文漢字字典</string>
+    <string name="Eijirou">英辞郎</string>
+    <string name="How_do_you_say_this_in_English">英語でなんて言うの？</string>
+    <string name="Word_Plus_Chinese">關鍵字 + 中文</string>
+    <string name="Word_Plus_English1">關鍵字 + 英文</string>
+    <string name="Word_Plus_English2">關鍵字 + 英語</string>
+    <string name="Word_Plus_Translation">關鍵字 + 翻譯</string>
+    <string name="Word_Plus_Japanese1">關鍵字 + 日文</string>
+    <string name="Word_Plus_Japanese2">關鍵字 + 日語</string>
+    <string name="Word_Plus_Japanese3">關鍵字 + 日本語</string>
+    <string name="Word_Plus_Meaning1">關鍵字 + 意思</string>
+    <string name="Word_Plus_Meaning2">關鍵字 + meaning</string>
+    <string name="Ludwig">Ludwig例句搜尋</string>
+    <string name="Your_Dictionary_Example_Sentences">Your Dictionary例句搜尋</string>
+    <string name="Word_Cool_EN_CH">句酷 中英英中</string>
+    <string name="Word_Cool_EN_JP">句酷 日英英日</string>
+    <string name="Wikipedia">英文維基百科</string>
+    <string name="Forvo">Forvo發音字典</string>
+    <string name="Wiki_Diff">Wiki Diff</string>
+    <string name="Net_Speak">Net Speak</string>
+    <string name="Yomikata">読み方は？</string>
+    <string name="Chigai">違いは？</string>
+    <string name="OJAD">OJAD鈴木君</string>
+    <string name="Google_TW_CN">Google繁體轉簡體</string>
+    <string name="Google_CN_TW">Google簡體轉繁體</string>
+    <string name="Google_Image">Google圖片搜尋</string>
+    <string name="Word_Input">輸入欲查詢單字</string>
+    <string name="Select_EN_Dictionary_Provider">選擇英文字典提供者</string>
+    <string name="Select_JP_Dictionary_Provider">選擇日文字典提供者</string>
+    <string name="Select_Google_Word_Searcher">選擇Google關鍵字搜尋字串</string>
+    <string name="Select_Sentence_Searcher">選擇例句搜尋提供者</string>
+    <string name="Miscellaneous">雜項</string>
+    <string name="Click_To_Scroll">點此下拉選單</string>
+    <string name="Search">搜尋</string>
+    <string name="Put_in_your_search_keyword_here">輸入欲搜尋的單字</string>
+    <string name="app_name">字典譯指通</string>
+    <string name="Tangorin_Word">單語林--單字</string>
+    <string name="Kotoba_Bank">言葉バンク</string>
+    <string name="Onelook">Onelook</string>
+    <string name="Wiki_Dictionary">維基字典</string>
+    <string name="Word_Hippo">Word Hippo</string>
+    <string name="Weblio_Synonym">Weblio類語辭典</string>
+    <string name="Jisho">Jisho日文讀音</string>
+    <string name="goo">Goo字典</string>
+    <string name="Tangorin_Kanji">單語林--漢字</string>
+    <string name="Tangorin_Names">單語林--名字</string>
+    <string name="Tangorin_Sentence">單語林--句子</string>
+    <string name="Word_Cool_JP_CH">句酷 日中中日</string>
+    <string name="Select_one_of_the_following">請選擇一項</string>
+    <string name="J_Logos">J Logos</string>
+    <string name="YouGlish">YouGlish</string>
+    <string name="VoiceTube">Voicetube英漢字典</string>
+    <string name="Exit_app">退出</string>
+    <string name="SCI_Dictionary">SCI學術字典</string>
+    <string name="DA_JP_TW_Dictionary">DA日中字典</string>
+    <string name="DA_TW_JP_Dictionary">DA中日字典</string>
+    <string name="External_storage_permission">必須允許存取照片的權限才可更換背景圖</string>
+    <string name="Change_background">更換背景</string>
+    <string name="Voice_input">語音輸入</string>
+    <string name="Speech_input">語音輸入</string>
+    <string name="Chinese_speech">中文辨識</string>
+    <string name="English_speech">英文辨識</string>
+    <string name="Japanese_speech">日文辨識</string>
+    <string name="Spanish_speech">西文辨識</string>
+    <string name="Simplified_chinese_speech">簡中辨識</string>
+    <string name="Korean_speech">韓文辨識</string>
+    <string name="Google_translate_to_CHTW">Google譯成繁中</string>
+    <string name="Google_translate_to_CHCN">Google譯成簡中</string>
+    <string name="Google_translate_to_EN">Google譯成英文</string>
+    <string name="Google_translate_to_JP">Google譯成日文</string>
+    <string name="Google_translate_to_KR">Google譯成韓文</string>
+    <string name="Google_translate_to_SP">Google譯成西文</string>
+    <string name="CH_speech_auto_translate_to_EN">中文辨識 自動英譯</string>
+    <string name="EN_speech_auto_translate_to_CH">英文辨識 自動中譯</string>
+    <string name="CH_speech_auto_translate_to_JP">中文辨識 自動日譯</string>
+    <string name="JP_speech_auto_translate_to_CH">日文辨識 自動中譯</string>
+    <string name="CH_speech_auto_translate_to_KR">中文辨識 自動韓譯</string>
+    <string name="KR_speech_auto_translate_to_CH">韓文辨識 自動中譯</string>
+    <string name="CH_speech_auto_translate_to_ES">中文辨識 自動西譯</string>
+    <string name="ES_speech_auto_translate_to_CH">西文辨識 自動中譯</string>
+    <string name="Speech_recognition_plus_Auto_Translation">語音辨識 + 自動翻譯</string>
+</resources>
