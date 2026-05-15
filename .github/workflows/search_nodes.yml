@@ -1,0 +1,43 @@
+name: search_nodes
+
+on:
+  workflow_dispatch: # 支持手动运行
+  push:
+    paths:
+      - 'search_nodes.py'
+      - '.github/workflows/search_nodes.yml'
+  schedule:
+    # 示例：每天北京时间 08:00 运行 (UTC 00:00)
+    - cron: '0 0 * * *'
+
+jobs:
+  run-search:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
+      - name: Install Dependencies
+        run: pip install requests
+
+      - name: Run Search Script
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BOT: "your_search_keyword_here" # 你也可以在 Repo Secrets 中设置 ${{ secrets.BOT }}
+        run: python search_nodes.py
+
+      - name: Commit and Push
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          git add results/nodes.txt
+          git commit -m "Update nodes: $(TZ='Asia/Shanghai' date +'%Y-%m-%d %H:%M:%S')" || exit 0
+          git push
