@@ -1,4 +1,0 @@
-vless://1893673b-0802-445a-9b0e-7de8d9991359@khaneh.berozsho.click:443?encryption=none&amp
-vless://935573d9-db1a-4235-8454-ded612105be6@5.180.82.155:8080?security=reality&amp
-vless://e53a92c7-4a78-49cc-ab01-917661058b9a@172.64.153.22:8443?path=%2F%3Fed%3D2560&amp
-vmess://https://t.me/proxy?server=77.72.80.83&amp
