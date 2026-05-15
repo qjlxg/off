@@ -1,43 +1,58 @@
 name: search_nodes
 
 on:
-  workflow_dispatch: # 手动运行
+  workflow_dispatch: # 支持手动点击运行
   push:
     paths:
-      - 'search_nodes.py'
-      - '.github/workflows/search_nodes.yml'
+      - 'search_nodes.py'  # 当脚本文件变动时触发
+      - '.github/workflows/search_nodes.yml' # 当工作流文件变动时触发
   schedule:
-    # 每天北京时间 04:00 自动运行 (对应 UTC 20:00)
-    - cron: '0 20 * * *'
+    # 每天北京时间 08:00 运行一次 (对应 UTC 00:00)
+    - cron: '0 0 * * *'
 
 jobs:
-  execute-task:
+  run_collector:
     runs-on: ubuntu-latest
+    # 必须赋予写权限，否则无法 git push
+    permissions:
+      contents: write
 
     steps:
-      - name: Checkout
+      - name: Checkout Code
         uses: actions/checkout@v4
+        with:
+          persist-credentials: true
 
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.9'
+          python-version: '3.10'
+          
 
-      - name: Install dependencies
-        run: pip install requests
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests
 
-      - name: Run Script
+      - name: Execute Node Search
         env:
-          # 将名为 BOT 的 Secret 传入环境变量
+          # 将你仓库 Secret 中的 BOT 映射为脚本所需的环境变量
           BOT: ${{ secrets.BOT }}
         run: python search_nodes.py
 
-      - name: Commit and Push
+      - name: Commit and Push Results
         run: |
-          git config --local user.email "actions@github.com"
-          git config --local user.name "GitHub Action"
+          # 配置 Git 机器人信息
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          
+          # 检查是否有文件更新
           git add results/nodes.txt
-          # 使用上海时间作为提交备注
-          TIMESTAMP=$(TZ='Asia/Shanghai' date +'%Y-%m-%d %H:%M:%S')
-          git commit -m "自动更新节点 - $TIMESTAMP" || exit 0
-          git push
+          if git diff --cached --quiet; then
+            echo "没有发现新节点或数据变动，跳过提交。"
+          else
+            # 使用上海时间作为提交信息
+            TIMESTAMP=$(TZ='Asia/Shanghai' date +'%Y-%m-%d %H:%M:%S')
+            git commit -m "Update nodes: $TIMESTAMP"
+            git push
+          fi
