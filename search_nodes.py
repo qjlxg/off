@@ -12,7 +12,7 @@ from urllib.parse import unquote, quote
 GITHUB_TOKEN = os.getenv("BOT")
 FILE_PATH = "results/nodes.txt"
 CSV_PATH = "results/stats.csv"
-DAYS_BEFORE = 3 
+DAYS_BEFORE = 2 
 # =========================================
 
 headers = {
