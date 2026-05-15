@@ -5,6 +5,8 @@ import requests
 import time
 import csv
 import socket
+import json
+import yaml  # 新增依赖
 from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import unquote, quote, urlparse
@@ -64,7 +66,6 @@ def clean_and_rename_node(node_url, repo_name):
             v_data = base_url[8:]
             missing_padding = len(v_data) % 4
             if missing_padding: v_data += '=' * (4 - missing_padding)
-            import json
             v_json = json.loads(base64.b64decode(v_data).decode('utf-8'))
             v_json['ps'] = repo_name 
             new_v_data = base64.b64encode(json.dumps(v_json).encode('utf-8')).decode('utf-8')
@@ -74,19 +75,79 @@ def clean_and_rename_node(node_url, repo_name):
     
     return f"{base_url}#{quote(repo_name)}"
 
+def clash_to_link(proxy):
+    """将 Clash 字典格式的代理转换为节点链接"""
+    try:
+        p_type = str(proxy.get('type', '')).lower()
+        server = proxy.get('server')
+        port = proxy.get('port')
+        if not server or not port: return None
+
+        if p_type == 'ss':
+            cipher = proxy.get('cipher')
+            password = proxy.get('password')
+            auth = base64.b64encode(f"{cipher}:{password}".encode()).decode()
+            return f"ss://{auth}@{server}:{port}"
+        
+        elif p_type == 'vmess':
+            v_json = {
+                "v": "2", "ps": "", "add": str(server), "port": str(port),
+                "id": str(proxy.get('uuid')), "aid": str(proxy.get('alterId', 0)),
+                "scy": proxy.get('cipher', 'auto'), "net": proxy.get('network', 'tcp'),
+                "type": "none", "host": "", "path": "", "tls": "tls" if proxy.get('tls') else ""
+            }
+            if v_json['net'] in ['ws', 'grpc']:
+                opts = proxy.get('ws-opts', {}) if v_json['net'] == 'ws' else proxy.get('grpc-opts', {})
+                v_json['host'] = opts.get('headers', {}).get('Host', '')
+                v_json['path'] = opts.get('path', '') if v_json['net'] == 'ws' else opts.get('grpc-service-name', '')
+            v_data = base64.b64encode(json.dumps(v_json).encode()).decode()
+            return f"vmess://{v_data}"
+
+        elif p_type in ['vless', 'trojan']:
+            uuid = proxy.get('uuid') or proxy.get('password')
+            params = f"sni={proxy.get('sni', '')}&type={proxy.get('network', 'tcp')}"
+            return f"{p_type}://{uuid}@{server}:{port}?{params}"
+
+        elif p_type in ['hysteria2', 'hy2']:
+            auth = proxy.get('password', proxy.get('auth', ''))
+            return f"hysteria2://{auth}@{server}:{port}?sni={proxy.get('sni', '')}"
+
+        elif p_type == 'tuic':
+            uuid = proxy.get('uuid')
+            passw = proxy.get('password')
+            return f"tuic://{uuid}:{passw}@{server}:{port}?sni={proxy.get('sni', '')}"
+            
+    except:
+        pass
+    return None
+
 def extract_nodes(text):
     if not text: return []
     found = set()
+    
+    # 1. 直接正则匹配链接
     for match in NODE_RE.finditer(text):
         found.add(match.group(0))
+        
+    # 2. 尝试解析 YAML (Clash)
+    if 'proxies:' in text:
+        try:
+            config = yaml.safe_load(text)
+            if isinstance(config, dict) and 'proxies' in config:
+                for p in config['proxies']:
+                    link = clash_to_link(p)
+                    if link: found.add(link)
+        except:
+            pass
+
+    # 3. 尝试 Base64 解码提取
     try:
         clean_text = re.sub(r'[^a-zA-Z0-9+/=]', '', text.strip())
         missing_padding = len(clean_text) % 4
         if missing_padding: clean_text += '=' * (4 - missing_padding)
         decoded = base64.b64decode(clean_text).decode('utf-8', errors='ignore')
-        if '://' in decoded:
-            for match in NODE_RE.finditer(decoded):
-                found.add(match.group(0))
+        if '://' in decoded or 'proxies:' in decoded:
+            found.update(extract_nodes(decoded)) # 递归处理解码内容
     except:
         pass
     return list(found)
@@ -160,13 +221,9 @@ def main():
     final_nodes = []
     
     def test_node(node_url):
-        # 协议特征识别
         lower_url = node_url.lower()
-        # 针对 UDP 协议节点（hysteria2, hy2, tuic）直接跳过测试，确保不被误杀
         if lower_url.startswith(("hysteria2://", "hy2://", "tuic://")):
             return node_url
-        
-        # 针对 TCP 协议节点（vmess, vless, ss, trojan 等）进行可用性测试
         if check_node_alive(node_url):
             return node_url
         return None
@@ -177,7 +234,6 @@ def main():
             if res:
                 final_nodes.append(res)
 
-    # 保存统计 CSV
     os.makedirs(os.path.dirname(FILE_PATH), exist_ok=True)
     with open(CSV_PATH, "w", encoding="utf-8-sig", newline="") as f:
         writer = csv.writer(f)
@@ -186,7 +242,6 @@ def main():
         for row in sorted_stats:
             writer.writerow(row)
 
-    # 保存 nodes.txt
     with open(FILE_PATH, "w", encoding="utf-8") as f:
         if final_nodes:
             f.write("\n".join(sorted(final_nodes)))
