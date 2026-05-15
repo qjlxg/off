@@ -5,22 +5,17 @@ import requests
 import time
 from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor
-from urllib.parse import unquote
 
 # 配置
 GITHUB_TOKEN = os.getenv("BOT")
 FILE_PATH = "results/nodes.txt"
 
-# 动态获取 7 天前的时间戳，格式为 YYYY-MM-DD
-last_week = (datetime.now() - timedelta(days=7)).strftime('%Y-%m-%d')
-
-# 在关键词中加入 pushed:> 时间限制，确保搜索的是活跃仓库
-SEARCH_QUERIES = [
-    f'vmess:// pushed:>{last_week} extension:txt',
-    f'vless:// pushed:>{last_week} extension:md',
-    f'"proxies:" pushed:>{last_week} extension:yaml',
-    f'clash node pushed:>{last_week} extension:yaml',
-    f'ssr:// pushed:>{last_week} extension:txt'
+# 1. 策略：搜索最近 3 天内活跃的仓库（代码搜索不支持 pushed，但仓库搜索支持）
+last_3_days = (datetime.now() - timedelta(days=3)).strftime('%Y-%m-%d')
+REPO_QUERIES = [
+    f'clash config pushed:>{last_3_days}',
+    f'v2ray nodes pushed:>{last_3_days}',
+    f'sub link pushed:>{last_3_days}'
 ]
 
 headers = {
@@ -29,43 +24,21 @@ headers = {
     "User-Agent": "Mozilla/5.0"
 }
 
-def decode_base64_safe(data: str) -> str:
-    data = re.sub(r'[^a-zA-Z0-9+/=]', '', data.strip())
+# 节点匹配正则
+NODE_RE = re.compile(r'(vmess|vless|ss|ssr|trojan|hysteria2?|tuic)://[a-zA-Z0-9%?&=._~#@:+/-]+', re.I)
+
+def fetch_content_from_url(url):
+    """直接通过 URL 获取内容并解析"""
     try:
-        missing_padding = len(data) % 4
-        if missing_padding:
-            data += '=' * (4 - missing_padding)
-        return base64.b64decode(data).decode('utf-8', errors='ignore')
-    except:
-        return ""
-
-def extract_nodes(text: str):
-    if not text: return []
-    found = set()
-    # 匹配各类节点协议的正则
-    pattern = r'(vmess|vless|ss|ssr|trojan|hysteria2?|tuic)://[a-zA-Z0-9%?&=._~#@:+/-]+'
-    
-    # 1. 直接匹配
-    for match in re.finditer(pattern, text, re.I):
-        found.add(match.group(0))
-
-    # 2. 尝试 Base64 解码提取（处理订阅格式）
-    decoded = decode_base64_safe(text)
-    if decoded and '://' in decoded:
-        for match in re.finditer(pattern, decoded, re.I):
-            found.add(match.group(0))
-
-    return list(found)
-
-def fetch_and_process(item):
-    try:
-        # 略微停顿避免被反爬
-        time.sleep(0.3)
-        resp = requests.get(item['url'], headers=headers, timeout=10)
+        resp = requests.get(url, headers=headers, timeout=10)
         if resp.status_code == 200:
-            encoded_content = resp.json().get('content', '')
-            raw_text = base64.b64decode(encoded_content).decode('utf-8', errors='ignore')
-            return extract_nodes(raw_text)
+            # 如果是 API 返回的 JSON (来自 search/code)
+            if 'content' in resp.json():
+                text = base64.b64decode(resp.json()['content']).decode('utf-8', errors='ignore')
+            else:
+                text = resp.text
+            
+            return list(set(m.group(0) for m in NODE_RE.finditer(text)))
     except:
         pass
     return []
@@ -75,44 +48,55 @@ def main():
         print("错误：未找到 BOT 变量")
         return
 
-    all_items = []
-    print(f"开始搜索最近更新的节点 (起始时间: {last_week})...")
-    
-    for query in SEARCH_QUERIES:
-        # 代码搜索 API 限制每分钟 30 次，此处限制每组关键词搜索
-        search_url = f"https://api.github.com/search/code?q={query}&per_page=50"
-        res = requests.get(search_url, headers=headers)
+    target_files = []
+    print(f"步骤 1: 寻找最近 3 天活跃的候选仓库...")
+
+    for q in REPO_QUERIES:
+        # 搜索仓库
+        repo_url = f"https://api.github.com/search/repositories?q={q}&sort=updated&per_page=10"
+        res = requests.get(repo_url, headers=headers)
         if res.status_code == 200:
-            items = res.json().get('items', [])
-            all_items.extend(items)
-            print(f"关键词 [{query.split()[0]}] 找到 {len(items)} 个活跃文件")
-        elif res.status_code == 403:
-            print("触发 API 频率限制，暂停 20 秒...")
-            time.sleep(20)
+            repos = res.json().get('items', [])
+            for r in repos:
+                full_name = r['full_name']
+                # 在该仓库内搜索相关后缀文件
+                code_url = f"https://api.github.com/search/code?q=repo:{full_name}+extension:txt+extension:yaml+extension:md"
+                c_res = requests.get(code_url, headers=headers)
+                if c_res.status_code == 200:
+                    items = c_res.json().get('items', [])
+                    target_files.extend(items)
+                    print(f"  来自 {full_name} 的候选文件: {len(items)} 个")
+                time.sleep(2) # 避开 code search 的严苛限流
         time.sleep(2)
 
-    if not all_items:
-        print("未找到最近更新的候选文件。")
-        return
+    if not target_files:
+        # 如果仓库搜索太严，退回到普通的关键词代码搜索（去掉 pushed 参数）
+        print("活跃仓库未匹配到文件，尝试直接代码搜索...")
+        fallback_queries = ['vmess:// extension:txt', '"proxies:" extension:yaml']
+        for fq in fallback_queries:
+            res = requests.get(f"https://api.github.com/search/code?q={fq}&per_page=50", headers=headers)
+            if res.status_code == 200:
+                target_files.extend(res.json().get('items', []))
 
+    print(f"步骤 2: 开始解析 {len(target_files)} 个文件内容...")
     unique_nodes = set()
-    # 稍微降低并发，提高稳定性
-    with ThreadPoolExecutor(max_workers=8) as executor:
-        results = executor.map(fetch_and_process, all_items)
+
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        # 这里提取的是 item['url']，即文件内容的 API 地址
+        results = executor.map(fetch_content_from_url, [f['url'] for f in target_files])
         for node_list in results:
             if node_list:
                 for node in node_list:
-                    # 过滤过短的无效链接，排除常见的 GitHub 链接误伤
-                    if len(node) > 25 and 'github.com' not in node.lower():
+                    if len(node) > 20 and 'github.com' not in node.lower():
                         unique_nodes.add(node.strip())
 
-    # 写入结果
+    # 保存
     os.makedirs(os.path.dirname(FILE_PATH), exist_ok=True)
     with open(FILE_PATH, "w", encoding="utf-8") as f:
         f.write("\n".join(sorted(list(unique_nodes))))
 
     print(f"--- 任务完成 ---")
-    print(f"本次提取到最近更新的唯一节点数: {len(unique_nodes)}")
+    print(f"提取到唯一节点数: {len(unique_nodes)}")
 
 if __name__ == "__main__":
     main()
