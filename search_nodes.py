@@ -4,9 +4,10 @@ import base64
 import requests
 import time
 import csv
+import socket
 from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor
-from urllib.parse import unquote, quote
+from urllib.parse import unquote, quote, urlparse
 
 # ================= 配置区 =================
 GITHUB_TOKEN = os.getenv("BOT")
@@ -21,8 +22,8 @@ headers = {
     "User-Agent": "Mozilla/5.0"
 }
 
-# 匹配节点基础协议和链接
-NODE_RE = re.compile(r'(vmess|vless|ss|ssr|trojan|hysteria2?|tuic)://[a-zA-Z0-9%?&=._~#@:+/-]+', re.I)
+# 优化后的正则：支持更多特殊字符，确保 hysteria2/tuic 的参数完整提取
+NODE_RE = re.compile(r'(vmess|vless|ss|ssr|trojan|hysteria2?|tuic)://[a-zA-Z0-9%?&=._~#@:+/\[\]-]+', re.I)
 
 def fetch_with_retry(url, max_retries=3):
     for i in range(max_retries):
@@ -38,36 +39,46 @@ def fetch_with_retry(url, max_retries=3):
             time.sleep(2)
     return None
 
+def check_node_alive(node_url, timeout=3):
+    """通过 TCP 握手检测节点连通性"""
+    try:
+        # 匹配格式: @host:port? 或 ://host:port?
+        match = re.search(r'://(?:.*@)?(?P<host>[^:/#?\[\]]+|\[[a-fA-F0-9:]+\]):(?P<port>\d+)', node_url)
+        if not match:
+            return False
+        
+        host = match.group('host').strip('[]')
+        port = int(match.group('port'))
+        
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except:
+        return False
+
 def clean_and_rename_node(node_url, repo_name):
-    """删除原备注并以仓库名命名"""
-    # 1. 移除原有 # 及其后面的备注内容
+    """删除原备注并以仓库名命名，保留所有参数"""
     base_url = node_url.split('#')[0]
     
-    # 2. 特殊处理 vmess (vmess 的备注有时加密在 json 里的 ps 字段)
     if base_url.lower().startswith("vmess://"):
         try:
             v_data = base_url[8:]
-            # 自动补全 padding
             missing_padding = len(v_data) % 4
             if missing_padding: v_data += '=' * (4 - missing_padding)
             import json
             v_json = json.loads(base64.b64decode(v_data).decode('utf-8'))
-            v_json['ps'] = repo_name  # 修改备注字段
+            v_json['ps'] = repo_name 
             new_v_data = base64.b64encode(json.dumps(v_json).encode('utf-8')).decode('utf-8')
             return f"vmess://{new_v_data}"
         except:
             return f"{base_url}#{quote(repo_name)}"
     
-    # 3. 其他协议 (vless, ss, trojan 等) 直接在末尾加 #仓库名
     return f"{base_url}#{quote(repo_name)}"
 
 def extract_nodes(text):
     if not text: return []
     found = set()
-    # 直接正则匹配
     for match in NODE_RE.finditer(text):
         found.add(match.group(0))
-    # 尝试 Base64 解码提取
     try:
         clean_text = re.sub(r'[^a-zA-Z0-9+/=]', '', text.strip())
         missing_padding = len(clean_text) % 4
@@ -129,7 +140,7 @@ def main():
 
     print(f"\n--- 步骤 2: 解析并重命名节点 ---")
     repo_node_count = {}
-    processed_nodes = set() # 用于 nodes.txt 的去重
+    raw_collected_nodes = set()
 
     with ThreadPoolExecutor(max_workers=5) as executor:
         results = executor.map(process_file_item, target_files)
@@ -140,27 +151,51 @@ def main():
             for n in nodes:
                 n = n.strip()
                 if len(n) > 20 and 'github.com' not in n.lower():
-                    # 处理节点：删除旧备注，添加新备注
                     renamed_node = clean_and_rename_node(n, repo_name)
-                    if renamed_node not in processed_nodes:
-                        processed_nodes.add(renamed_node)
+                    if renamed_node not in raw_collected_nodes:
+                        raw_collected_nodes.add(renamed_node)
                         repo_node_count[repo_name] += 1
+
+    print(f"\n--- 步骤 3: 节点过滤与测速 (Hy2/Tuic 直接保留) ---")
+    final_nodes = []
+    
+    def test_node(node_url):
+        # 协议特征识别
+        lower_url = node_url.lower()
+        # 针对 UDP 协议节点（hysteria2, hy2, tuic）直接跳过测试，确保不被误杀
+        if lower_url.startswith(("hysteria2://", "hy2://", "tuic://")):
+            return node_url
+        
+        # 针对 TCP 协议节点（vmess, vless, ss, trojan 等）进行可用性测试
+        if check_node_alive(node_url):
+            return node_url
+        return None
+
+    with ThreadPoolExecutor(max_workers=20) as executor:
+        check_results = executor.map(test_node, list(raw_collected_nodes))
+        for res in check_results:
+            if res:
+                final_nodes.append(res)
 
     # 保存统计 CSV
     os.makedirs(os.path.dirname(FILE_PATH), exist_ok=True)
     with open(CSV_PATH, "w", encoding="utf-8-sig", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow(["仓库名称", "有效节点数量"])
+        writer.writerow(["仓库名称", "发现节点数量"])
         sorted_stats = sorted(repo_node_count.items(), key=lambda x: x[1], reverse=True)
         for row in sorted_stats:
             writer.writerow(row)
 
-    # 保存 nodes.txt (已经是 节点#仓库名 格式)
+    # 保存 nodes.txt
     with open(FILE_PATH, "w", encoding="utf-8") as f:
-        f.write("\n".join(sorted(list(processed_nodes))))
+        if final_nodes:
+            f.write("\n".join(sorted(final_nodes)))
+        else:
+            f.write("")
 
     print(f"\n--- 任务完成 ---")
-    print(f"唯一节点数: {len(processed_nodes)}，已重命名。")
+    print(f"共发现唯一节点: {len(raw_collected_nodes)}")
+    print(f"最终保留节点: {len(final_nodes)} (含跳过测试的 UDP 节点)")
 
 if __name__ == "__main__":
     main()
