@@ -1,23 +1,21 @@
 name: search_nodes
 
 on:
-  workflow_dispatch: # 支持手动运行
+  workflow_dispatch: # 手动运行
   push:
     paths:
       - 'search_nodes.py'
       - '.github/workflows/search_nodes.yml'
   schedule:
-    # 示例：每天北京时间 08:00 运行 (UTC 00:00)
-    - cron: '0 0 * * *'
+    # 每天北京时间 04:00 自动运行 (对应 UTC 20:00)
+    - cron: '0 20 * * *'
 
 jobs:
-  run-search:
+  execute-task:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
 
     steps:
-      - name: Checkout Code
+      - name: Checkout
         uses: actions/checkout@v4
 
       - name: Set up Python
@@ -25,19 +23,21 @@ jobs:
         with:
           python-version: '3.9'
 
-      - name: Install Dependencies
+      - name: Install dependencies
         run: pip install requests
 
-      - name: Run Search Script
+      - name: Run Script
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          BOT: "your_search_keyword_here" # 你也可以在 Repo Secrets 中设置 ${{ secrets.BOT }}
+          # 将名为 BOT 的 Secret 传入环境变量
+          BOT: ${{ secrets.BOT }}
         run: python search_nodes.py
 
       - name: Commit and Push
         run: |
-          git config --local user.email "github-actions[bot]@users.noreply.github.com"
-          git config --local user.name "github-actions[bot]"
+          git config --local user.email "actions@github.com"
+          git config --local user.name "GitHub Action"
           git add results/nodes.txt
-          git commit -m "Update nodes: $(TZ='Asia/Shanghai' date +'%Y-%m-%d %H:%M:%S')" || exit 0
+          # 使用上海时间作为提交备注
+          TIMESTAMP=$(TZ='Asia/Shanghai' date +'%Y-%m-%d %H:%M:%S')
+          git commit -m "自动更新节点 - $TIMESTAMP" || exit 0
           git push
