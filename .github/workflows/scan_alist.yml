@@ -1,0 +1,69 @@
+name: AList Pro Scanner (WhiteList & SpeedUp)
+
+on:
+  workflow_dispatch:        # 允许手动触发
+  schedule:
+    - cron: '0 2 * * *'     # 每天北京时间上午 10:00 自动运行
+  push:
+    paths:
+      - 'scan_alist.py'
+      - '.github/workflows/scan_alist.yml'
+      - 'duplicate.txt'
+
+jobs:
+  alist-scan-task:
+    runs-on: ubuntu-latest
+    
+    # 授予必要的写入权限
+    permissions:
+      contents: write
+      actions: write 
+
+    steps:
+      - name: 1. 拉取最新代码
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 
+
+      - name: 2. 安装 Python 环境
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: 3. 安装必要依赖
+        run: |
+          pip install requests pytz urllib3
+
+      - name: 4. 执行扫描引擎
+        run: |
+          python scan_alist.py
+        env:
+          PYTHONUNBUFFERED: 1 
+
+      - name: 5. 精准同步结果
+        run: |
+          # 配置身份
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          
+          # 核心修正：先取消所有自动添加，确保暂存区干净
+          git reset
+          
+          # 只添加 Python 脚本中定义的核心输出文件
+          # 这样即便 .github/workflows/ 被意外改动，也不会被提交
+          git add scan_results/
+          git add site_status.csv
+          
+          # 检查是否有文件更新
+          if git diff --staged --quiet; then
+            echo "No data changes detected. Skipping push."
+            exit 0
+          fi
+          
+          # 提交变动
+          # [skip ci] 极为重要，防止机器人提交后再次触发 workflow 导致死循环
+          git commit -m "chore: 自动同步扫描结果与健康表 [skip ci]"
+          
+          # 安全推送：先 rebase 远程变动再 push
+          git pull origin main --rebase
+          git push origin main
